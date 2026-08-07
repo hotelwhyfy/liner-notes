@@ -1,0 +1,94 @@
+# A small complete album file, exercising most of what linernotes reads.
+# Build it with:  linernotes-gui examples/slow-water.yaml
+
+album:
+  title: Slow Water
+  artist: The Harbour Lights
+  year: "2026"
+  label: Tidal Records
+  catalog: TID-014
+  # cover: art/front.jpg        # relative to this file
+
+design:
+  background: "#fbfaf7"
+  ink: "#141414"
+  accent: "#8a7a5e"
+  muted: "#6b6b6b"
+
+tracks:
+  - title: Morning Ferry
+    duration: "3:42"
+    writers:
+      - name: Jane Doe
+        role: music
+        share: 60
+        publisher: Blue Dock Music
+        pro: ASCAP
+      - name: Sam Reyes
+        role: lyrics
+        share: 40
+        publisher: Reyes Songs
+        pro: BMI
+    recorded_at: The Shed
+    lyrics: |
+      The first boat leaves at six
+      and I am not on it
+
+      I count the gulls instead
+      one for every year
+      I have meant to go
+
+  - title: Low Tide
+    duration: "4:10"
+    instrumental: true
+    writers:
+      - name: Jane Doe
+        publisher: Blue Dock Music
+        pro: ASCAP
+    notes: Recorded in one take at first light
+
+  - title: Harbour Lights
+    duration: "5:01"
+    writers:
+      - name: Sam Reyes
+        share: 50
+        publisher: Reyes Songs
+        pro: BMI
+      - name: Jane Doe
+        share: 50
+        publisher: Blue Dock Music
+        pro: ASCAP
+    producer: Marco Vale
+    lyrics: |
+      Harbour lights, harbour lights
+      burning down the bay
+
+      I will not be home tonight
+      and neither will the day
+
+credits:
+  personnel:
+    - name: Jane Doe
+      role: vocals, guitar
+    - name: Sam Reyes
+      role: bass
+    - name: Ida Fenn
+      role: drums
+      tracks: [1, 3]
+  production:
+    - name: Marco Vale
+      role: producer
+    - name: Ruth Ollan
+      role: mastering
+
+notes:
+  - title: About this record
+    body: >
+      Recorded over two winters in a shed by the water, mostly at hours when
+      the tide was the loudest thing for a mile. Nothing here was played more
+      than three times.
+
+copyright:
+  phonographic: ℗ 2026 Tidal Records
+  composition: © 2026 Blue Dock Music / Reyes Songs
+  notice: All rights reserved. Unauthorised duplication is a violation of applicable laws.

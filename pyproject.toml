@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "linernotes"
+version = "0.1.0"
+description = "Typeset a CD booklet from a YAML description of a record"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "reportlab>=4.0",
+    "pyyaml>=6.0",
+    "pillow>=10.0",   # reportlab reads cover artwork through it
+    "pymupdf>=1.24",  # rasterises panels for the editor's preview
+]
+
+[project.scripts]
+linernotes-gui = "linernotes.gui.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

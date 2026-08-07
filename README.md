@@ -1,0 +1,279 @@
+# linernotes
+
+Typesets a CD booklet from a single YAML file.
+
+You describe the record — tracks, lyrics, songwriter credits, personnel, copyright — and
+linernotes lays it out and produces two PDFs:
+
+- **a reader PDF**, one panel per page in reading order, for proofing on screen;
+- **a press PDF**, saddle-stitch imposed two-up with bleed, crop marks and fold marks,
+  for sending to a printer.
+
+Songwriter credits, the writer index, and the track listing are all *derived from the track
+data*, so a writer added to a track cannot go missing from the credits panel.
+
+There is a desktop editor for all of it, and a Python API if you'd rather script it.
+
+---
+
+## Install
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -e .
+```
+
+Requires Python 3.11+ (developed against 3.14.6). Pulls in reportlab, PyYAML, Pillow, and
+PyMuPDF — the last of which rasterises panels for the editor's preview.
+
+## The editor
+
+```sh
+linernotes-gui                          # start empty
+linernotes-gui examples/slow-water.yaml  # open a file
+```
+
+Or without installing: `PYTHONPATH=src python -m linernotes.gui examples/slow-water.yaml`.
+
+The window is in four parts:
+
+- **Navigator** (left) — the sections of the album file, with every track listed under
+  Tracks.
+- **Editor** (centre) — a form for whatever is selected.
+- **Preview** (right) — the selected panel as it will print, with `‹` `›` to page through
+  the booklet. Panels are drawn by the same renderer that writes the PDF, so the preview is
+  not an approximation.
+- **Issue log** (bottom) — errors, warnings and layout notes, refreshed as you type.
+  Double-click an issue about a track to jump to it.
+
+The preview and issue log rebuild about a third of a second after you stop typing. A
+document mid-edit is usually invalid — a track with no writers yet, say — and that is an
+ordinary state: the issue log tells you what is missing and the preview waits.
+
+| | |
+| --- | --- |
+| `Cmd+N` / `Cmd+O` | new / open |
+| `Cmd+S` | save |
+| `Cmd+E` | export both PDFs |
+| `Cmd+R` | rebuild the preview now |
+
+**Export both PDFs…** asks for a directory and writes `<artist>-<title>-reader.pdf` and
+`-press.pdf` into it. The two single exports let you choose a filename. Exporting refuses
+while the album still has errors, and shows you which.
+
+### What the editor does to your file
+
+Saving rewrites the file. Two things to know:
+
+- **Empty fields are dropped**, not written as `subtitle: ''`. Clearing a box restores that
+  field's default.
+- **Shorthand is expanded.** The format accepts `Jane Doe - drums` for a person and a bare
+  `Jane Doe` for a writer. The editor needs separate fields to edit, so it rewrites those
+  into mappings the first time it opens the section holding them.
+
+Both are only written back when you save. Multi-line text — lyrics, liner notes — stays a
+readable block scalar rather than one long quoted string.
+
+## Scripting it
+
+```python
+from linernotes import build
+
+result = build("examples/slow-water.yaml", out_dir="out")
+print(result.panel_count, "panels /", result.sheet_count, "sheets")
+for issue in result.log.issues:
+    print(issue.format())
+```
+
+| argument     | default  | meaning                                            |
+| ------------ | -------- | -------------------------------------------------- |
+| `album_path` | —        | path to the album YAML file                        |
+| `out_dir`    | `"out"`  | directory for the PDFs (created if missing)        |
+| `reader`     | `True`   | write the reading-order PDF                        |
+| `press`      | `True`   | write the imposed press PDF                        |
+| `folios`     | `False`  | print panel numbers and labels on the reader PDF   |
+| `marks`      | `True`   | print crop and fold marks on the press PDF         |
+
+To validate and lay out without writing anything, use `plan_booklet(path)` for a file or
+`album_from_raw(mapping, source_dir)` plus `plan_from_album(album)` for data you already
+hold in memory. Both return the laid-out `Booklet` and the `IssueLog`.
+
+## Panel order
+
+The booklet is assembled in the order a jewel-case booklet is actually read:
+
+| panel      | contents                                              |
+| ---------- | ----------------------------------------------------- |
+| 1          | front cover artwork                                   |
+| 2          | track listing                                         |
+| 3 …        | lyrics, one song after another                        |
+| …          | liner notes                                           |
+| …          | songwriter credits, then the writer index, personnel  |
+| last       | colophon — title, imprint, ℗ and © lines              |
+
+A saddle-stitched booklet is folded sheets, so the panel count must be a multiple of four.
+Blank panels are inserted *before* the colophon, which always takes the final panel.
+
+## The album file
+
+Only `album.title`, `album.artist`, and at least one track with at least one writer are
+required. Everything else has a sensible default. `examples/slow-water.yaml` is a complete
+working file; the annotated version:
+
+```yaml
+album:
+  title: Slow Water
+  artist: The Harbour Lights
+  subtitle: ""
+  year: "2026"
+  label: Tidal Records
+  catalog: TID-014
+  cover: art/front.jpg          # relative to the YAML file's directory
+  back_cover: art/back.jpg
+
+tracks:
+  - title: Morning Ferry
+    duration: "3:42"
+    writers:
+      - name: Jane Doe
+        role: music              # printed as "Music by Jane Doe. Lyrics by …"
+        share: 60                # percentages; must total 100 if given
+        publisher: Blue Dock Music
+        pro: ASCAP
+      - name: Sam Reyes
+        role: lyrics
+        share: 40
+        publisher: Reyes Songs
+        pro: BMI
+    lyrics: |
+      The first boat leaves at six
+      and I am not on it
+
+      I count the gulls instead
+    producer: Marco Vale
+    arranger: ""
+    recorded_at: The Shed
+    notes: ""
+    publisher_note: ""           # overrides the derived publishing line
+
+  - title: Low Tide
+    duration: "4:10"
+    instrumental: true           # suppresses the "no lyrics" warning
+    writers: [Jane Doe]          # a bare string is just a name
+
+credits:
+  personnel:
+    - Jane Doe - vocals, guitar  # "Name - role" shorthand
+    - name: Ida Fenn
+      role: drums
+      tracks: [1, 3]             # omit for "all tracks"
+  production:
+    - Marco Vale - producer
+
+notes:
+  - title: About this record
+    body: >
+      Recorded over two winters in a shed by the water.
+
+copyright:
+  phonographic: "℗ 2026 Tidal Records"     # the sound recording
+  composition: "© 2026 Blue Dock Music"    # the underlying works
+  notice: All rights reserved.
+  extra: []
+```
+
+### `design`
+
+Written at the top level or nested under `album:` (top level wins).
+
+| key             | default     | meaning                                   |
+| --------------- | ----------- | ----------------------------------------- |
+| `cover`         | `""`        | front cover image                         |
+| `back_cover`    | `""`        | image behind the colophon                 |
+| `background`    | `"#ffffff"` | paper colour                              |
+| `ink`           | `"#141414"` | body text colour                          |
+| `accent`        | `"#8a7a5e"` | section headings and rules                |
+| `muted`         | `"#6b6b6b"` | credits and small print                   |
+| `cover_overlay` | `true`      | print artist and title over the cover art |
+| `cover_scrim`   | `true`      | dark gradient behind that type            |
+| `fonts`         | `{}`        | see below                                 |
+
+### `layout`
+
+| key                 | default | meaning                                            |
+| ------------------- | ------- | -------------------------------------------------- |
+| `panel_mm`          | `120.0` | panel width and height                             |
+| `bleed_mm`          | `3.0`   | artwork bleed past the trim on the press sheet     |
+| `margin_outer_mm`   | `9.0`   | margin at the outside edge                         |
+| `margin_inner_mm`   | `11.0`  | margin at the fold — wider, to clear the staple    |
+| `margin_top_mm`     | `10.0`  |                                                    |
+| `margin_bottom_mm`  | `10.0`  |                                                    |
+| `lyric_size_max`    | `10.5`  | lyrics are set at this size, then shrunk to fit    |
+| `lyric_size_min`    | `7.0`   | …but never below this                              |
+| `credit_size_max`   | `8.5`   | same, for credits and small print                  |
+| `credit_size_min`   | `6.0`   |                                                    |
+| `pack_songs`        | `true`  | let a short song share a panel with the next       |
+| `min_orphan_mm`     | `22.0`  | **not yet implemented** — see Known gaps           |
+
+Unknown `design` or `layout` keys are reported as warnings and ignored.
+
+### `fonts`
+
+Four roles are used: `display` (titles), `body` (lyrics), `meta` (credits), and `mono`.
+Each takes either a built-in family name — `serif`/`times` or `sans`/`helvetica` — or a
+mapping of weight to TrueType file. Weights are `regular`, `bold`, `italic`, `bold_italic`;
+missing weights fall back to `regular`. Append `#N` to pick a face out of a `.ttc`.
+
+```yaml
+design:
+  fonts:
+    display:
+      regular: /System/Library/Fonts/Supplemental/Baskerville.ttc#0
+      bold: /System/Library/Fonts/Supplemental/Baskerville.ttc#1
+    body: serif
+    meta: sans
+```
+
+Defaults are Times for `display` and `body`, Helvetica for `meta` and `mono`. These are
+reportlab built-ins, so a booklet never depends on what happens to be installed. Any font
+that fails to load is reported as a warning and falls back rather than failing the build.
+
+## Validation
+
+The loader collects every problem it finds and reports them together rather than stopping
+at the first. Errors abort the build; warnings do not.
+
+**Errors** — missing album title or artist; no tracks; a track with no title; duplicate
+track numbers; a track with no songwriter credit; a writer with no name; a share outside
+`0 < share <= 100`; cover artwork that does not exist.
+
+**Warnings** — no ℗ or © line; no cover artwork; a back cover that does not exist (it is
+dropped); the same writer credited twice on one track; shares given for only some writers
+on a track; shares that do not total 100%; a track with neither lyrics nor
+`instrumental: true`; a track marked instrumental that has lyrics anyway.
+
+**Info** — a section that had to be shrunk to fit, and the size it was set at; a section
+that had to flow across more than one panel.
+
+The strictness around songwriter credits is deliberate. Getting a writer, a share, or a
+publisher wrong on a physical pressing is expensive to discover after the fact.
+
+## Printing
+
+The press PDF is imposed two-up for saddle stitch: with 8 panels the sheets carry
+`8|1`, `2|7`, `6|3`, `4|5`. Fold each sheet down the centre, nest them, staple at the fold.
+
+At the default 120 mm panel and 3 mm bleed, each press page is 262 × 142 mm — the trim pair
+plus an 11 mm slug on every side for bleed and marks. The fold is marked with ticks outside
+the trim and a faint dashed line across the sheet; a caption on each sheet names the panels
+it carries. Neither half bleeds across the fold.
+
+## Known gaps
+
+- `layout.min_orphan_mm` is accepted and documented but never read. The planner method it
+  was meant to drive, `PanelPlanner.ensure_room`, exists but is never called.
+- Section headings have no space above them, so when two sections share a panel the heading
+  butts against the previous section's last line.
+- The `mono` font role is registered but nothing uses it.
+- No batch CLI — the editor and the Python API are the two ways in.
+- No tests.

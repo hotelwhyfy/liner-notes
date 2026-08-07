@@ -1,0 +1,2 @@
+[console_scripts]
+linernotes-gui = linernotes.gui.app:main
