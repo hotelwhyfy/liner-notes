@@ -65,6 +65,18 @@ class FieldGrid(ttk.Frame):
             self._row += 1
         return widget
 
+    def hint(self, text: str = "") -> ttk.Label:
+        """A note under the field above it, returned so it can be rewritten.
+
+        ``entry``'s own ``hint`` is fixed at build time; this one is for text
+        that has to follow the document, like a value being derived elsewhere.
+        """
+        widget = ttk.Label(self, text=text, style="Hint.TLabel", wraplength=440,
+                           justify="left")
+        widget.grid(row=self._row, column=1, sticky="w", pady=(0, PAD))
+        self._row += 1
+        return widget
+
     def check(self, label: str, key: str, default: bool = False) -> ttk.Checkbutton:
         current = self.mapping.get(key, default)
         var = tk.BooleanVar(value=bool(current))
@@ -137,6 +149,40 @@ class FieldGrid(ttk.Frame):
             )
             self._row += 1
         return widget
+
+    def choice(
+        self,
+        label: str,
+        key: str,
+        options: list[tuple[str, str]],
+        default: str,
+        on_pick: Callable[[str], None] | None = None,
+    ) -> None:
+        """One of a short list of values, as a row of radio buttons.
+
+        ``options`` is (stored value, button text). ``on_pick`` fires after the
+        document is updated, for forms that show different fields per choice.
+        """
+        self._label(label)
+        holder = ttk.Frame(self)
+        holder.grid(row=self._row, column=1, sticky="ew", pady=4)
+        self._row += 1
+
+        current = str(self.mapping.get(key, default) or default)
+        if current not in {value for value, _ in options}:
+            current = default
+        var = tk.StringVar(value=current)
+
+        def apply(*_: object) -> None:
+            _set(self.mapping, key, var.get(), self.on_change)
+            if on_pick is not None:
+                on_pick(var.get())
+
+        var.trace_add("write", apply)
+        for i, (value, text) in enumerate(options):
+            ttk.Radiobutton(holder, text=text, value=value, variable=var).grid(
+                row=0, column=i, sticky="w", padx=(0, PAD * 2)
+            )
 
     def color(self, label: str, key: str, default: str) -> None:
         self._label(label)

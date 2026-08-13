@@ -98,15 +98,21 @@ class PanelRenderer:
         c.restoreState()
 
         if bg.scrim:
-            self._scrim(c, x, y, w, h)
+            self._scrim(c, x, y, w, h, bg.scrim_height)
 
     def _scrim(
-        self, c: pdfcanvas.Canvas, x: float, y: float, w: float, h: float
+        self, c: pdfcanvas.Canvas, x: float, y: float, w: float, h: float,
+        fraction: float = 0.52,
     ) -> None:
-        """A soft dark gradient at the foot of the cover so white type stays
-        legible over whatever the artwork happens to be doing there."""
+        """A soft dark gradient at the foot of a panel so white type stays
+        legible over whatever the artwork happens to be doing there.
+
+        ``fraction`` is how far up the panel it reaches: enough to sit behind a
+        cover title, or the whole panel for a back cover carrying text at both
+        the middle and the foot.
+        """
         bands = 48
-        band_h = h * 0.52 / bands
+        band_h = h * max(0.0, min(fraction, 1.0)) / bands
         c.saveState()
         c.setFillColorRGB(0, 0, 0)
         for i in range(bands):

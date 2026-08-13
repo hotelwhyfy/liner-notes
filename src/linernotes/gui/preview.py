@@ -47,6 +47,7 @@ class PreviewPane(ttk.Frame):
         super().__init__(parent)
         self.booklet: Booklet | None = None
         self.index = 0
+        self.pinned = False      # the user paged here; stop following the editor
         self._photo: tk.PhotoImage | None = None   # kept alive against GC
         self._resize_job: str | None = None
         self._last_size = (0, 0)
@@ -89,15 +90,35 @@ class PreviewPane(ttk.Frame):
     def previous(self) -> None:
         if self.booklet and self.index > 0:
             self.index -= 1
+            self.pinned = True
             self._redraw()
 
     def next(self) -> None:
         if self.booklet and self.index < len(self.booklet.panels) - 1:
             self.index += 1
+            self.pinned = True
             self._redraw()
 
     def go_to(self, index: int) -> None:
-        if self.booklet and 0 <= index < len(self.booklet.panels):
+        """Move to a panel and stay there until told otherwise."""
+        self.pinned = True
+        self._move_to(index)
+
+    def follow(self, index: int) -> None:
+        """Move to the panel the editor is working on.
+
+        Ignored once the user has paged by hand: they went looking for a panel
+        and having it slide away on the next keystroke would be maddening.
+        Selecting something in the navigator is what hands control back.
+        """
+        if not self.pinned:
+            self._move_to(index)
+
+    def unpin(self) -> None:
+        self.pinned = False
+
+    def _move_to(self, index: int) -> None:
+        if self.booklet and 0 <= index < len(self.booklet.panels) and index != self.index:
             self.index = index
             self._redraw()
 

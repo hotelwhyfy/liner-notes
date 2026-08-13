@@ -10,7 +10,8 @@ linernotes lays it out and produces two PDFs:
   for sending to a printer.
 
 Songwriter credits, the writer index, and the track listing are all *derived from the track
-data*, so a writer added to a track cannot go missing from the credits panel.
+data*, so a writer added to a track cannot go missing from the credits panel. So are the ℗
+and © lines, and the running order can be read straight off the audio files.
 
 There is a desktop editor for all of it, and a Python API if you'd rather script it.
 
@@ -23,8 +24,13 @@ python3 -m venv .venv
 .venv/bin/pip install -e .
 ```
 
-Requires Python 3.11+ (developed against 3.14.6). Pulls in reportlab, PyYAML, Pillow, and
-PyMuPDF — the last of which rasterises panels for the editor's preview.
+Or run `./launch.sh`, which installs on first use and starts the editor. It skips the
+install on every run after that, and repeats it only if a dependency changes.
+
+Requires Python 3.11+ (developed against 3.14.6). Pulls in reportlab, PyYAML, Pillow,
+PyMuPDF — which rasterises panels for the editor's preview — and mutagen, which reads
+durations and tags out of audio files. Without mutagen an import still reads the running
+order from the filenames, only without durations.
 
 ## The editor
 
@@ -40,26 +46,77 @@ The window is in four parts:
 - **Navigator** (left) — the sections of the album file, with every track listed under
   Tracks.
 - **Editor** (centre) — a form for whatever is selected.
-- **Preview** (right) — the selected panel as it will print, with `‹` `›` to page through
-  the booklet. Panels are drawn by the same renderer that writes the PDF, so the preview is
-  not an approximation.
+- **Preview** (right) — the panel the selected section prints on, with `‹` `›` to page
+  through the booklet. Panels are drawn by the same renderer that writes the PDF, so the
+  preview is not an approximation.
 - **Issue log** (bottom) — errors, warnings and layout notes, refreshed as you type.
   Double-click an issue about a track to jump to it.
 
+The preview follows the navigator: select a song and it shows the panel that song's lyrics
+land on, even when two songs share a panel or one flows across several. Page with `‹` `›`
+and it stays where you put it — selecting something in the navigator hands control back.
+
 The preview and issue log rebuild about a third of a second after you stop typing. A
-document mid-edit is usually invalid — a track with no writers yet, say — and that is an
+document mid-edit is usually invalid — a record with no artist yet, say — and that is an
 ordinary state: the issue log tells you what is missing and the preview waits.
 
 | | |
 | --- | --- |
 | `Cmd+N` / `Cmd+O` | new / open |
 | `Cmd+S` | save |
+| `Cmd+I` | import audio files |
 | `Cmd+E` | export both PDFs |
 | `Cmd+R` | rebuild the preview now |
+
+### Starting from the audio
+
+**File ▸ Import audio files…** (`Cmd+I`) and **Import a folder of audio…** read a running
+order off the files themselves: title, duration and track number per song, and the album
+title, artist, year and songwriter where every file agrees on them. Track order comes from
+the track-number tags when they are all present and from the filenames otherwise, so a
+ripped folder sorts correctly either way — and `01 - Morning Ferry.mp3` becomes
+*Morning Ferry*, not `01 - Morning Ferry`.
+
+Anything already typed in is left alone; an import only fills blanks. If the album already
+has tracks you are asked whether to replace them or add to the end. Files with unreadable
+tags fall back to their filenames rather than failing the import.
+
+What an import deliberately does *not* fill in is the writers — see below.
+
+### Songwriters
+
+Most records are written by one person, and saying so once is enough. Whoever is named
+under **Songwriters** is credited on every track, and that credit flows into the track
+listing, the songwriter credits panel and the writer index exactly as if it had been typed
+on each song.
+
+A song with a different writer overrides it: on that song's pane, **Give this track its own
+writers** starts from the album's writers so you can change the one name that differs.
+**Use the album's songwriters instead** hands it back. The Songwriters pane lists which
+tracks are currently overriding.
 
 **Export both PDFs…** asks for a directory and writes `<artist>-<title>-reader.pdf` and
 `-press.pdf` into it. The two single exports let you choose a filename. Exporting refuses
 while the album still has errors, and shows you which.
+
+### Copyright lines
+
+The ℗ and © lines are the same two sentences on every record, so they are written for you
+from what the album already says:
+
+| line | derived as |
+| --- | --- |
+| ℗ | `℗ <year> <label, or the artist if there is no label>` |
+| © | `© <year> <publisher, or the writers, or the artist>` |
+| notice | `All rights reserved.` |
+
+Typing in a box overrides that line and only that line, and a box left empty is not printed
+empty — it is printed derived. The Copyright pane shows what each line will say. Nothing is
+written into your file unless you press **Write the automatic lines into the file**, which
+you only want if you need them frozen as they read today rather than following the album.
+
+A new document starts with the current year filled in, since that is what the derivation
+needs and what a record being described now is almost always released in.
 
 ### What the editor does to your file
 
@@ -106,19 +163,25 @@ The booklet is assembled in the order a jewel-case booklet is actually read:
 | ---------- | ----------------------------------------------------- |
 | 1          | front cover artwork                                   |
 | 2          | track listing                                         |
-| 3 …        | lyrics, one song after another                        |
+| 2 …        | lyrics, one song after another                        |
 | …          | liner notes                                           |
 | …          | songwriter credits, then the writer index, personnel  |
 | last       | colophon — title, imprint, ℗ and © lines              |
+
+Inside pages are set in `layout.columns` columns (two by default), filled left to right;
+a section starts at the top of a fresh column rather than a fresh panel, so the track
+listing and the first song usually share panel 2. Songs carry no track number and there is
+no "Lyrics" heading — a song is announced by its title, set in bold at the same size as
+everything else on the page.
 
 A saddle-stitched booklet is folded sheets, so the panel count must be a multiple of four.
 Blank panels are inserted *before* the colophon, which always takes the final panel.
 
 ## The album file
 
-Only `album.title`, `album.artist`, and at least one track with at least one writer are
-required. Everything else has a sensible default. `examples/slow-water.yaml` is a complete
-working file; the annotated version:
+Only `album.title`, `album.artist`, and at least one track are required, and every track
+needs a writer from somewhere — its own, or the album's. Everything else has a sensible
+default. `examples/slow-water.yaml` is a complete working file; the annotated version:
 
 ```yaml
 album:
@@ -130,6 +193,11 @@ album:
   catalog: TID-014
   cover: art/front.jpg          # relative to the YAML file's directory
   back_cover: art/back.jpg
+
+writers:                        # credited on every track that names none itself
+  - name: Jane Doe
+    publisher: Blue Dock Music
+    pro: ASCAP
 
 tracks:
   - title: Morning Ferry
@@ -175,28 +243,51 @@ notes:
     body: >
       Recorded over two winters in a shed by the water.
 
-copyright:
-  phonographic: "℗ 2026 Tidal Records"     # the sound recording
-  composition: "© 2026 Blue Dock Music"    # the underlying works
+copyright:                                 # every line here is optional; a line
+  phonographic: "℗ 2026 Tidal Records"     # left out is derived, not left blank
+  composition: "© 2026 Blue Dock Music"
   notice: All rights reserved.
   extra: []
 ```
+
+### `writers`
+
+A list of writer mappings — the same shape as a track's `writers` — credited on every track
+that does not name its own. Accepted at the top level or under `album:`. A track whose
+`writers` list is absent, empty, or holds only unnamed entries inherits these; a track with
+a named writer of its own ignores them completely rather than adding to them.
+
+Without this, every track needs its own `writers` and the build fails on any that lack one.
 
 ### `design`
 
 Written at the top level or nested under `album:` (top level wins).
 
-| key             | default     | meaning                                   |
-| --------------- | ----------- | ----------------------------------------- |
-| `cover`         | `""`        | front cover image                         |
-| `back_cover`    | `""`        | image behind the colophon                 |
-| `background`    | `"#ffffff"` | paper colour                              |
-| `ink`           | `"#141414"` | body text colour                          |
-| `accent`        | `"#8a7a5e"` | section headings and rules                |
-| `muted`         | `"#6b6b6b"` | credits and small print                   |
-| `cover_overlay` | `true`      | print artist and title over the cover art |
-| `cover_scrim`   | `true`      | dark gradient behind that type            |
-| `fonts`         | `{}`        | see below                                 |
+| key                | default     | meaning                                    |
+| ------------------ | ----------- | ------------------------------------------ |
+| `cover`            | `""`        | front cover image                          |
+| `back_cover`       | `""`        | image behind the colophon                  |
+| `back_cover_color` | `""`        | solid colour behind the colophon instead   |
+| `back_cover_mode`  | `"auto"`    | `artwork`, `color`, or `auto` — see below  |
+| `background`       | `"#ffffff"` | paper colour                               |
+| `interior_color`   | `""`        | inside pages; empty means the paper colour |
+| `ink`              | `"#141414"` | body text colour                           |
+| `accent`           | `"#8a7a5e"` | section headings and rules                 |
+| `muted`            | `"#6b6b6b"` | credits and small print                    |
+| `cover_overlay`    | `true`      | print artist and title over the cover art  |
+| `cover_scrim`      | `true`      | dark gradient behind that type             |
+| `fonts`            | `{}`        | see below                                  |
+
+The back panel is either artwork or a flat colour. `back_cover_mode: artwork` uses the
+image and ignores the colour; `color` uses the colour and ignores the image, so a path can
+stay in the file while a colour is tried. `auto` — what a file that does not mention it
+gets — takes the image when there is one and the colour when there is not. On a solid
+colour the colophon type flips to white or black if the colour is the same tone as the ink;
+over artwork the type is left as it is.
+
+`interior_color` paints every panel between the covers. Set it dark and `ink` light for a
+black booklet — if both come out the same tone the build warns rather than printing black
+on black.
 
 ### `layout`
 
@@ -204,6 +295,8 @@ Written at the top level or nested under `album:` (top level wins).
 | ------------------- | ------- | -------------------------------------------------- |
 | `panel_mm`          | `120.0` | panel width and height                             |
 | `bleed_mm`          | `3.0`   | artwork bleed past the trim on the press sheet     |
+| `columns`           | `2`     | text columns per inside panel                      |
+| `column_gap_mm`     | `6.0`   | space between those columns                        |
 | `margin_outer_mm`   | `9.0`   | margin at the outside edge                         |
 | `margin_inner_mm`   | `11.0`  | margin at the fold — wider, to clear the staple    |
 | `margin_top_mm`     | `10.0`  |                                                    |
@@ -212,7 +305,7 @@ Written at the top level or nested under `album:` (top level wins).
 | `lyric_size_min`    | `7.0`   | …but never below this                              |
 | `credit_size_max`   | `8.5`   | same, for credits and small print                  |
 | `credit_size_min`   | `6.0`   |                                                    |
-| `pack_songs`        | `true`  | let a short song share a panel with the next       |
+| `pack_songs`        | `true`  | let a short song share a column with the next      |
 | `min_orphan_mm`     | `22.0`  | **not yet implemented** — see Known gaps           |
 
 Unknown `design` or `layout` keys are reported as warnings and ignored.
@@ -244,16 +337,22 @@ The loader collects every problem it finds and reports them together rather than
 at the first. Errors abort the build; warnings do not.
 
 **Errors** — missing album title or artist; no tracks; a track with no title; duplicate
-track numbers; a track with no songwriter credit; a writer with no name; a share outside
-`0 < share <= 100`; cover artwork that does not exist.
+track numbers; a track with no songwriter credit and no album songwriters to inherit; a
+writer with no name; a share outside `0 < share <= 100`; cover artwork that does not exist.
 
-**Warnings** — no ℗ or © line; no cover artwork; a back cover that does not exist (it is
-dropped); the same writer credited twice on one track; shares given for only some writers
-on a track; shares that do not total 100%; a track with neither lyrics nor
-`instrumental: true`; a track marked instrumental that has lyrics anyway.
+**Warnings** — no ℗ or © line *and too little information to derive one*; no cover artwork;
+a back cover that does not exist while the back panel is set to carry artwork (it is
+dropped); inside pages and ink of the same tone; the same writer credited twice on one
+track; shares given for only some writers on a track; shares that do not total 100%; a
+track with neither lyrics nor `instrumental: true`; a track marked instrumental that has
+lyrics anyway.
 
-**Info** — a section that had to be shrunk to fit, and the size it was set at; a section
-that had to flow across more than one panel.
+**Info** — each copyright line that was derived, and what it came out as; a section that
+had to be shrunk to fit, and the size it was set at; a section that had to flow across more
+than one panel.
+
+Problems with the album's songwriters are reported once, against `songwriters`, rather than
+repeated for every track that inherits them.
 
 The strictness around songwriter credits is deliberate. Getting a writer, a share, or a
 publisher wrong on a physical pressing is expensive to discover after the fact.
@@ -275,5 +374,9 @@ it carries. Neither half bleeds across the fold.
 - Section headings have no space above them, so when two sections share a panel the heading
   butts against the previous section's last line.
 - The `mono` font role is registered but nothing uses it.
+- Importing a folder reads it one level deep; a folder of disc subfolders needs the discs
+  selecting individually.
+- An import does not pull embedded cover art out of the files; the cover is still chosen by
+  hand on the Album pane.
 - No batch CLI — the editor and the Python API are the two ways in.
 - No tests.

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,9 @@ from ..model import album_from_raw
 
 # The order a hand-written album file tends to be organised in. Saving follows
 # it so a file the editor touched still reads like one a person wrote.
-TOP_LEVEL_ORDER = ("album", "design", "layout", "tracks", "credits", "notes", "copyright")
+TOP_LEVEL_ORDER = (
+    "album", "design", "layout", "writers", "tracks", "credits", "notes", "copyright"
+)
 
 
 class _AlbumDumper(yaml.SafeDumper):
@@ -71,9 +74,15 @@ def _pruned(value: Any) -> Any:
 
 
 def new_album_data() -> dict:
-    """A blank document with just enough shape to start typing into."""
+    """A blank document with just enough shape to start typing into.
+
+    The year is filled in because the ℗ and © lines are derived from it, and a
+    record being described now is almost always being released now. It is an
+    ordinary editable field, not a guess made behind the user's back.
+    """
     return {
-        "album": {"title": "Untitled", "artist": "", "year": ""},
+        "album": {"title": "Untitled", "artist": "", "year": str(date.today().year)},
+        "writers": [],
         "tracks": [],
         "credits": {"personnel": [], "production": []},
         "notes": [],
@@ -203,6 +212,45 @@ class AlbumDocument:
     @property
     def tracks(self) -> list:
         return self.collection("tracks")
+
+    @property
+    def writers(self) -> list:
+        """The album's songwriters — the credit every track inherits."""
+        return self.collection("writers")
+
+    def track_has_own_writers(self, track: Any) -> bool:
+        """Does this track override the album's songwriters?
+
+        A list of blank entries does not count. Panes create those as soon as a
+        writer row is added, and an unfilled row should still inherit rather
+        than fail the build with 'a writer entry has no name'.
+        """
+        if not isinstance(track, dict):
+            return False
+        writers = track.get("writers")
+        if not isinstance(writers, list):
+            return bool(writers)
+        return any(
+            str(w.get("name", "") if isinstance(w, dict) else w).strip() for w in writers
+        )
+
+    def derived_copyright(self) -> dict[str, str]:
+        """The ℗ / © / notice lines the document implies for the blanks.
+
+        Same derivation the build uses, so what the Copyright pane shows is what
+        the colophon prints. Nothing is written into the document.
+        """
+        try:
+            album, _ = album_from_raw(copy.deepcopy(self.data), self.source_dir, IssueLog())
+        except LinerNotesError:
+            return {}
+        given = self.section("copyright")
+        return {
+            key: getattr(album.copyright, key)
+            for key in ("phonographic", "composition", "notice")
+            if getattr(album.copyright, key)
+            and not str(given.get(key, "") or "").strip()
+        }
 
     def credits(self, kind: str) -> list:
         """``personnel`` or ``production`` under the credits mapping."""

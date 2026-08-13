@@ -3,10 +3,13 @@
 Panel order follows how a jewel-case booklet is actually read:
 
     1        front cover artwork
-    2        track listing
-    3..n     lyrics, one song after another
+    2..n     track listing, then lyrics one song after another
     n+1..    liner notes, then songwriter credits and the writer index
     last     personnel, label and copyright
+
+Inside pages are set in columns (see ``layout.columns``); a section opens at the
+top of a fresh column rather than a fresh panel, so a two-column booklet fits
+twice as much on a page without anything starting mid-column.
 
 The songwriter credits are generated from the track data rather than written by
 hand, so a writer added to a track cannot go missing from the credits panel.
@@ -36,6 +39,7 @@ from .layout import (
     blanks_needed,
     compose_panel,
     hex_to_rgb,
+    is_dark,
 )
 from .model import Album, Track, join_names
 from .text import FontSet
@@ -53,38 +57,46 @@ class Theme:
     muted: tuple[float, float, float]
     accent: tuple[float, float, float]
     paper: tuple[float, float, float]
+    interior: tuple[float, float, float]
+    back: tuple[float, float, float]
 
     @classmethod
     def from_album(cls, album: Album, fonts: FontSet) -> "Theme":
         d = album.design
+        paper = hex_to_rgb(d.background)
         return cls(
             fonts=fonts,
             ink=hex_to_rgb(d.ink),
             muted=hex_to_rgb(d.muted),
             accent=hex_to_rgb(d.accent),
-            paper=hex_to_rgb(d.background),
+            paper=paper,
+            interior=hex_to_rgb(d.interior_color) if d.interior_color else paper,
+            back=hex_to_rgb(d.back_cover_fill()) if d.back_cover_fill() else paper,
         )
 
     # Each style takes the section's base size so the whole block scales
-    # together when the planner shrinks it to fit.
+    # together when the planner shrinks it to fit. Inside the booklet everything
+    # is set at that one size — the song title is told apart by its weight, not
+    # by being bigger than the words underneath it.
 
     def song_title(self, base: float) -> Style:
         return Style(
             font=self.fonts.get("display", "bold"),
-            size=base * 1.42,
-            leading=base * 1.62,
+            size=base,
+            leading=base * 1.36,
             color=self.ink,
-            space_after=base * 0.16,
+            collapse=True,
+            space_after=base * 0.1,
         )
 
     def song_credit(self, base: float) -> Style:
         return Style(
-            font=self.fonts.get("meta", "regular"),
-            size=max(base * 0.72, 5.4),
-            leading=base * 0.95,
+            font=self.fonts.get("body", "italic"),
+            size=base,
+            leading=base * 1.36,
             color=self.muted,
             collapse=True,
-            space_after=base * 0.5,
+            space_after=base * 0.45,
         )
 
     def lyric(self, base: float) -> Style:
@@ -99,8 +111,8 @@ class Theme:
     def lyric_note(self, base: float) -> Style:
         return Style(
             font=self.fonts.get("body", "italic"),
-            size=max(base * 0.82, 5.6),
-            leading=base * 1.2,
+            size=base,
+            leading=base * 1.36,
             color=self.muted,
             collapse=True,
             space_before=base * 0.6,
@@ -258,7 +270,10 @@ def build_booklet(album: Album, geo: Geometry, fonts: FontSet, log: IssueLog) ->
 
     cover = _cover_panel(album, geo, theme)
 
-    planner = PanelPlanner(geo, log, first_index=2)
+    planner = PanelPlanner(
+        geo, log, first_index=2,
+        columns=opts.columns, column_gap=opts.column_gap_mm * mm,
+    )
     for section in _sections(album, theme, opts):
         planner.add_section(section)
     plan = planner.finish()
@@ -271,6 +286,18 @@ def build_booklet(album: Album, geo: Geometry, fonts: FontSet, log: IssueLog) ->
         Panel(index=before_colophon + 1 + i, kind="blank", label="blank")
         for i in range(pad)
     ]
+
+    # The inside pages carry their own colour, so it can differ from the paper
+    # the covers are printed on.
+    interior = Background(color=theme.interior)
+    for panel in (*content_panels, *blanks):
+        panel.background = interior
+    if theme.interior != theme.paper and is_dark(theme.interior) == is_dark(theme.ink):
+        log.warn(
+            "design.interior_contrast",
+            "the inside pages and the ink are both "
+            f"{'dark' if is_dark(theme.ink) else 'light'}; the text will be hard to read",
+        )
     colophon_index = before_colophon + pad + 1
     colophon = _colophon_panel(album, geo, theme, colophon_index)
 
@@ -290,10 +317,13 @@ def build_booklet(album: Album, geo: Geometry, fonts: FontSet, log: IssueLog) ->
 def _cover_panel(album: Album, geo: Geometry, theme: Theme) -> Panel:
     design = album.design
     art = album.resolve(design.cover)
+    has_art = bool(art and art.exists())
     background = Background(
         color=theme.paper,
-        image=str(art) if art and art.exists() else None,
-        scrim=bool(design.cover_scrim and art and art.exists()),
+        image=str(art) if has_art else None,
+        # The scrim exists to hold the overlaid type. With no type over the
+        # artwork it would only be darkening the picture for nothing.
+        scrim=bool(design.cover_scrim and has_art and design.cover_overlay),
     )
 
     panel = Panel(index=1, kind="cover", background=background, label="front cover")
@@ -322,10 +352,8 @@ def _sections(album: Album, theme: Theme, opts) -> list[Section]:
     sections: list[Section] = []
     sections.append(_tracklist_section(album, theme, opts))
 
-    first = True
     for track in album.tracks:
-        sections.append(_lyric_section(album, track, theme, opts, first=first))
-        first = False
+        sections.append(_lyric_section(track, theme, opts))
 
     for i, note in enumerate(album.notes):
         sections.append(_note_section(note, theme, opts, index=i))
@@ -366,21 +394,17 @@ def _tracklist_section(album: Album, theme: Theme, opts) -> Section:
         build=build,
         size_max=opts.credit_size_max,
         size_min=opts.credit_size_min,
-        start_new_panel=True,
+        start_new_column=True,
         kind="content",
         label="track listing",
     )
 
 
-def _lyric_section(album: Album, track: Track, theme: Theme, opts, first: bool) -> Section:
+def _lyric_section(track: Track, theme: Theme, opts) -> Section:
     def build(base: float) -> list[Block]:
-        header: list[Block] = []
-        if first:
-            header.extend(_heading(theme, "Lyrics", base))
-
-        head_blocks: list[Block] = [
-            Text(f"{track.number}. {track.title}", theme.song_title(base))
-        ]
+        # No "Lyrics" heading and no track number: inside the booklet a song is
+        # announced by its title alone.
+        head_blocks: list[Block] = [Text(track.title, theme.song_title(base))]
         credit = writing_credit_phrase(track)
         if credit:
             head_blocks.append(Text(credit, theme.song_credit(base)))
@@ -406,14 +430,16 @@ def _lyric_section(album: Album, track: Track, theme: Theme, opts, first: bool) 
         if extras:
             body.append(Text(" · ".join(extras), theme.lyric_note(base)))
 
-        return [*header, Group(head_blocks), *body, Spacer(base * 1.5)]
+        return [Group(head_blocks), *body, Spacer(base * 1.5)]
 
     return Section(
         key=f"track-{track.number}",
         build=build,
         size_max=opts.lyric_size_max,
         size_min=opts.lyric_size_min,
-        start_new_panel=first or not opts.pack_songs,
+        # Packing lets a short song share a column with the next one; without it
+        # every song opens a column of its own.
+        start_new_column=not opts.pack_songs,
         kind="content",
         label=f"{track.number}. {track.title}",
     )
@@ -433,7 +459,7 @@ def _note_section(note, theme: Theme, opts, index: int) -> Section:
         build=build,
         size_max=opts.credit_size_max + 0.5,
         size_min=opts.credit_size_min,
-        start_new_panel=index == 0,
+        start_new_column=index == 0,
         kind="content",
         label=note.title or f"note {index + 1}",
     )
@@ -460,7 +486,7 @@ def _songwriter_credits_section(album: Album, theme: Theme, opts) -> Section:
         build=build,
         size_max=opts.credit_size_max,
         size_min=opts.credit_size_min,
-        start_new_panel=True,
+        start_new_column=True,
         kind="credits",
         label="songwriter credits",
     )
@@ -526,11 +552,29 @@ def _colophon_panel(album: Album, geo: Geometry, theme: Theme, index: int) -> Pa
     base = album.layout.credit_size_max
     blocks: list[Block] = []
 
+    # The back panel is either artwork or a flat colour. Which one is settled in
+    # the model, so a path left behind by a change of mind cannot resurface here.
+    art = album.resolve(album.design.back_cover_art())
+    has_art = bool(art and art.exists())
+    background = Background(
+        color=theme.back,
+        image=str(art) if has_art else None,
+        scrim=False,
+    )
+
+    # Over a solid fill the type has to be readable, and the ink was chosen for
+    # the inside pages — so on a back cover of the same tone, invert it rather
+    # than print black on black. Artwork is left alone: only the person who
+    # picked the picture knows where the type will land on it.
+    ink, muted = theme.ink, theme.muted
+    if not has_art and is_dark(theme.back) == is_dark(theme.ink):
+        ink = muted = (1.0, 1.0, 1.0) if is_dark(theme.back) else (0.08, 0.08, 0.08)
+
     title_style = Style(
         font=theme.fonts.get("display", "bold"),
         size=base * 1.5,
         leading=base * 1.7,
-        color=theme.ink,
+        color=ink,
         align="center",
         collapse=True,
     )
@@ -538,7 +582,7 @@ def _colophon_panel(album: Album, geo: Geometry, theme: Theme, index: int) -> Pa
         font=theme.fonts.get("meta", "regular"),
         size=base * 0.92,
         leading=base * 1.3,
-        color=theme.muted,
+        color=muted,
         align="center",
         tracking=base * 0.14,
         uppercase=True,
@@ -549,7 +593,7 @@ def _colophon_panel(album: Album, geo: Geometry, theme: Theme, index: int) -> Pa
         font=theme.fonts.get("meta", "regular"),
         size=base * 0.8,
         leading=base * 1.25,
-        color=theme.muted,
+        color=muted,
         align="center",
         collapse=True,
     )
@@ -557,7 +601,7 @@ def _colophon_panel(album: Album, geo: Geometry, theme: Theme, index: int) -> Pa
         font=theme.fonts.get("meta", "regular"),
         size=max(base * 0.68, 5.0),
         leading=base * 1.05,
-        color=theme.muted,
+        color=muted,
         align="center",
         collapse=True,
     )
@@ -580,11 +624,6 @@ def _colophon_panel(album: Album, geo: Geometry, theme: Theme, index: int) -> Pa
     for extra in cr.extra:
         blocks.append(Spacer(base * 0.35))
         blocks.append(Text(extra, fine_style))
-
-    art = album.resolve(album.design.back_cover)
-    background = Background(color=theme.paper)
-    if art and art.exists():
-        background = Background(color=theme.paper, image=str(art), scrim=False)
 
     return compose_panel(
         geo,

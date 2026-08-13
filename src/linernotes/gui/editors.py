@@ -12,6 +12,7 @@ is what tells the user what they get by leaving a box empty.
 
 from __future__ import annotations
 
+import copy
 import tkinter as tk
 from tkinter import ttk
 from typing import Any, Callable
@@ -62,7 +63,8 @@ def build_album_pane(parent: tk.Misc, doc: AlbumDocument, on_change: OnChange) -
     grid.file("Front cover", "cover", lambda: doc.source_dir,
               hint="Printed full-bleed on panel 1.")
     grid.file("Back cover", "back_cover", lambda: doc.source_dir,
-              hint="Sits behind the colophon on the final panel. Missing files are skipped.")
+              hint="Sits behind the colophon on the final panel. Missing files are "
+                   "skipped. Design chooses between this and a solid colour.")
     return shell
 
 
@@ -72,7 +74,74 @@ def build_album_pane(parent: tk.Misc, doc: AlbumDocument, on_change: OnChange) -
 
 
 def _new_track() -> dict:
-    return {"title": "New track", "writers": [{"name": ""}], "lyrics": ""}
+    # No writers: a track with none inherits the album's songwriters, which is
+    # the common case. Overriding is a button away on the track's own pane.
+    return {"title": "New track", "lyrics": ""}
+
+
+def _writer_editor(
+    parent: tk.Misc, writers: list, on_change: OnChange, add_text: str
+) -> ListEditor:
+    """The list-plus-detail form used for writers, wherever they are credited."""
+    for i, writer in enumerate(writers):
+        if not isinstance(writer, dict):
+            writers[i] = {"name": str(writer)}   # bare-name shorthand
+
+    def detail(holder: tk.Misc, writer: dict) -> tk.Widget:
+        grid = FieldGrid(holder, writer, on_change)
+        grid.entry("Name", "name")
+        grid.entry("Role", "role", hint="e.g. music, lyrics. Splits the printed credit line.")
+        grid.number("Share %", "share", "", low=0, high=100, step=5)
+        grid.entry("Publisher", "publisher")
+        grid.entry("PRO", "pro", hint="ASCAP, BMI, PRS …")
+        return grid
+
+    return ListEditor(
+        parent,
+        writers,
+        label=lambda w, i: _name_of(w, "unnamed writer")
+        + (f"  ({w.get('share')}%)" if isinstance(w, dict) and w.get("share") else ""),
+        factory=lambda: {"name": ""},
+        detail=detail,
+        on_change=on_change,
+        add_text=add_text,
+        list_height=5,
+    )
+
+
+def build_writers_pane(parent: tk.Misc, doc: AlbumDocument, on_change: OnChange) -> tk.Widget:
+    """The album's songwriters — credited on every track that doesn't say otherwise."""
+    shell = Scrollable(parent)
+    body = shell.body
+    _title(
+        body,
+        "Songwriters",
+        "Whoever is named here is credited on every track, so a record with one "
+        "writer only needs saying once. A track can still name its own writers, "
+        "and then these are ignored for that track.",
+    )
+
+    writers = doc.writers
+    _writer_editor(body, writers, on_change, "Add songwriter").pack(fill="both", expand=True)
+
+    overrides = [
+        f"{t.get('number', i + 1)}. {str(t.get('title') or 'untitled').strip()}"
+        for i, t in enumerate(doc.tracks)
+        if doc.track_has_own_writers(t)
+    ]
+    if overrides:
+        ttk.Label(body, text="TRACKS WITH THEIR OWN WRITERS", style="Section.TLabel").pack(
+            anchor="w", pady=(PAD * 3, 2)
+        )
+        ttk.Separator(body, orient="horizontal").pack(fill="x", pady=(0, PAD))
+        ttk.Label(
+            body,
+            text=", ".join(overrides) + ".\nThese ignore the songwriters above.",
+            style="Hint.TLabel",
+            wraplength=460,
+            justify="left",
+        ).pack(anchor="w")
+    return shell
 
 
 def build_tracks_pane(parent: tk.Misc, doc: AlbumDocument, on_change: OnChange) -> tk.Widget:
@@ -114,6 +183,91 @@ def build_tracks_pane(parent: tk.Misc, doc: AlbumDocument, on_change: OnChange) 
     return shell
 
 
+def _writers_summary(writers: list) -> str:
+    names = [_name_of(w, "") for w in writers]
+    names = [n for n in names if n]
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    return ", ".join(names[:-1]) + f" & {names[-1]}"
+
+
+def _build_track_writers(
+    parent: tk.Misc, doc: AlbumDocument, track: dict, on_change: OnChange
+) -> tk.Widget:
+    """Either 'inherits the album's songwriters' or this track's own list.
+
+    Which one is showing is decided by whether the track holds a ``writers``
+    list at all — not by whether the names in it are filled in — so a row added
+    and not yet typed into doesn't bounce the form back to the inherited state.
+    """
+    holder = ttk.Frame(parent)
+
+    def editing_own() -> bool:
+        writers = track.get("writers")
+        return isinstance(writers, list) and len(writers) > 0
+
+    def render() -> None:
+        for child in holder.winfo_children():
+            child.destroy()
+
+        if editing_own():
+            ttk.Label(
+                holder,
+                text="This track credits its own writers; the album's songwriters "
+                     "are ignored for it. Shares are optional, but if you give them "
+                     "they must total 100%.",
+                style="Hint.TLabel",
+                wraplength=460,
+                justify="left",
+            ).pack(anchor="w", pady=(0, PAD))
+            _writer_editor(holder, track["writers"], on_change, "Add writer").pack(
+                fill="both", expand=True
+            )
+            ttk.Button(holder, text="Use the album's songwriters instead",
+                       command=inherit).pack(anchor="w", pady=(PAD, 0))
+            return
+
+        album_writers = _writers_summary(doc.writers)
+        if album_writers:
+            ttk.Label(
+                holder,
+                text=f"Credited to {album_writers}, the album's songwriters.",
+                style="Hint.TLabel",
+                wraplength=460,
+                justify="left",
+            ).pack(anchor="w", pady=(0, PAD))
+        else:
+            ttk.Label(
+                holder,
+                text="No writer yet. Every track needs one or the build fails — name "
+                     "the album's songwriters once under Songwriters and every track "
+                     "inherits them.",
+                style="Hint.TLabel",
+                wraplength=460,
+                justify="left",
+            ).pack(anchor="w", pady=(0, PAD))
+        ttk.Button(holder, text="Give this track its own writers",
+                   command=override).pack(anchor="w")
+
+    def inherit() -> None:
+        track.pop("writers", None)
+        on_change()
+        render()
+
+    def override() -> None:
+        # Start from the album's writers rather than a blank row: a track that
+        # differs usually differs by one name or one share.
+        seed = copy.deepcopy(doc.writers) or [{"name": ""}]
+        track["writers"] = seed
+        on_change()
+        render()
+
+    render()
+    return holder
+
+
 def build_track_pane(
     parent: tk.Misc, doc: AlbumDocument, on_change: OnChange, index: int
 ) -> tk.Widget:
@@ -153,42 +307,7 @@ def build_track_pane(
 
     ttk.Label(body, text="WRITERS", style="Section.TLabel").pack(anchor="w", pady=(PAD * 3, 2))
     ttk.Separator(body, orient="horizontal").pack(fill="x", pady=(0, PAD))
-    ttk.Label(
-        body,
-        text="Every track needs at least one writer or the build fails. Shares are "
-             "optional, but if you give them they must total 100%.",
-        style="Hint.TLabel",
-        wraplength=460,
-    ).pack(anchor="w", pady=(0, PAD))
-
-    writers = track.get("writers")
-    if not isinstance(writers, list):
-        writers = [writers] if writers else []
-        track["writers"] = writers
-    for i, writer in enumerate(writers):
-        if not isinstance(writer, dict):
-            writers[i] = {"name": str(writer)}   # bare-name shorthand
-
-    def writer_detail(holder: tk.Misc, writer: dict) -> tk.Widget:
-        grid = FieldGrid(holder, writer, on_change)
-        grid.entry("Name", "name")
-        grid.entry("Role", "role", hint="e.g. music, lyrics. Splits the printed credit line.")
-        grid.number("Share %", "share", "", low=0, high=100, step=5)
-        grid.entry("Publisher", "publisher")
-        grid.entry("PRO", "pro", hint="ASCAP, BMI, PRS …")
-        return grid
-
-    ListEditor(
-        body,
-        writers,
-        label=lambda w, i: _name_of(w, "unnamed writer")
-        + (f"  ({w.get('share')}%)" if isinstance(w, dict) and w.get("share") else ""),
-        factory=lambda: {"name": ""},
-        detail=writer_detail,
-        on_change=on_change,
-        add_text="Add writer",
-        list_height=5,
-    ).pack(fill="both", expand=True)
+    _build_track_writers(body, doc, track, on_change).pack(fill="both", expand=True)
 
     ttk.Label(body, text="RECORDING", style="Section.TLabel").pack(anchor="w", pady=(PAD * 3, 2))
     ttk.Separator(body, orient="horizontal").pack(fill="x", pady=(0, PAD))
@@ -318,15 +437,65 @@ def build_copyright_pane(parent: tk.Misc, doc: AlbumDocument, on_change: OnChang
     _title(
         body,
         "Copyright",
-        "Printed on the final panel. Both notices are only warnings if missing, "
-        "but a commercial pressing wants them.",
+        "Printed on the final panel. Leave a line blank and it is written from "
+        "the year, the label and the songwriters — the box is only for saying "
+        "something different.",
     )
 
-    grid = FieldGrid(body, doc.section("copyright"), on_change)
+    copyright_data = doc.section("copyright")
+    grid = FieldGrid(body, copyright_data, on_change)
     grid.pack(fill="x")
-    grid.entry("℗ Sound recording", "phonographic", hint="e.g. ℗ 2026 Tidal Records")
-    grid.entry("© Composition", "composition", hint="e.g. © 2026 Blue Dock Music")
-    grid.entry("Notice", "notice", hint="e.g. All rights reserved.")
+    fields = (
+        ("℗ Sound recording", "phonographic", "℗ 2026 Tidal Records"),
+        ("© Composition", "composition", "© 2026 Blue Dock Music"),
+        ("Notice", "notice", "All rights reserved."),
+    )
+    entries: dict[str, ttk.Entry] = {}
+    derived_labels: dict[str, ttk.Label] = {}
+    for label, key, _example in fields:
+        entries[key] = grid.entry(label, key)
+        derived_labels[key] = grid.hint()
+
+    def refresh_derived() -> None:
+        derived = doc.derived_copyright()
+        for label, key, example in fields:
+            if key in derived:
+                text = f"Automatic: {derived[key]}"
+            elif str(copyright_data.get(key, "") or "").strip():
+                text = "Typed in by hand — nothing is derived while this box has text."
+            else:
+                text = f"Nothing to derive yet. e.g. {example}"
+            derived_labels[key].configure(text=text)
+
+    def adopt() -> None:
+        """Freeze the derived lines into the file as ordinary text."""
+        derived = doc.derived_copyright()
+        if not derived:
+            return
+        for key, text in derived.items():
+            copyright_data[key] = text
+            entries[key].delete(0, "end")
+            entries[key].insert(0, text)
+        on_change()
+        refresh_derived()
+
+    def changed() -> None:
+        on_change()
+        refresh_derived()
+
+    grid.on_change = changed
+    refresh_derived()
+
+    ttk.Button(body, text="Write the automatic lines into the file",
+               command=adopt).pack(anchor="w", pady=(PAD, 0))
+    ttk.Label(
+        body,
+        text="Only needed if you want them fixed as they are now. Left alone they "
+             "follow the album, so changing the label or the year changes them too.",
+        style="Hint.TLabel",
+        wraplength=460,
+        justify="left",
+    ).pack(anchor="w", pady=(2, 0))
 
     ttk.Label(body, text="ADDITIONAL LINES", style="Section.TLabel").pack(
         anchor="w", pady=(PAD * 3, 2)
@@ -350,14 +519,33 @@ def build_design_pane(parent: tk.Misc, doc: AlbumDocument, on_change: OnChange) 
     design = doc.section("design")
     grid = FieldGrid(body, design, on_change)
     grid.pack(fill="x")
+    paper = str(design.get("background") or "").strip() or "#ffffff"
     grid.color("Paper", "background", "#ffffff")
+    # Defaulted to the paper rather than to white: opening this pane should not
+    # repaint a booklet that never asked for a colour of its own.
+    grid.color("Inside pages", "interior_color", paper)
+    grid.hint("The background of every panel between the covers. Leave it as the "
+              "paper colour for plain white pages.")
     grid.color("Ink", "ink", "#141414")
     grid.color("Accent", "accent", "#8a7a5e")
     grid.color("Muted", "muted", "#6b6b6b")
 
-    grid.heading("Cover")
+    grid.heading("Front cover")
     grid.check("Print artist and title over the artwork", "cover_overlay", default=True)
     grid.check("Dark gradient behind that type", "cover_scrim", default=True)
+
+    grid.heading("Back cover")
+    grid.choice(
+        "Print",
+        "back_cover_mode",
+        [("artwork", "The artwork"), ("color", "A solid colour")],
+        default="artwork" if str(design.get("back_cover") or "").strip() else "color",
+    )
+    grid.hint("The artwork is chosen under Album. A solid colour ignores it, so the "
+              "image can stay in the file while you try one.")
+    grid.color("Colour", "back_cover_color", paper)
+    grid.hint("Type on the back panel flips to white or black to stay readable "
+              "on a colour that matches the ink.")
 
     grid.heading("Fonts")
     fonts = design.get("fonts")
@@ -392,6 +580,10 @@ def build_layout_pane(parent: tk.Misc, doc: AlbumDocument, on_change: OnChange) 
     grid.number("Panel size (mm)", "panel_mm", 120.0, low=40, high=300, step=1)
     grid.number("Bleed (mm)", "bleed_mm", 3.0, low=0, high=20, step=0.5)
 
+    grid.heading("Columns")
+    grid.number("Columns per panel", "columns", 2, low=1, high=4, step=1, cast=int)
+    grid.number("Gap between them (mm)", "column_gap_mm", 6.0, low=0, high=40, step=0.5)
+
     grid.heading("Margins (mm)")
     grid.number("Outer", "margin_outer_mm", 9.0, low=0, high=60, step=0.5)
     grid.number("Inner (at the fold)", "margin_inner_mm", 11.0, low=0, high=60, step=0.5)
@@ -405,7 +597,7 @@ def build_layout_pane(parent: tk.Misc, doc: AlbumDocument, on_change: OnChange) 
     grid.number("Credits, smallest", "credit_size_min", 6.0, low=4, high=40, step=0.25)
 
     grid.heading("Flow")
-    grid.check("Let a short song share a panel with the next", "pack_songs", default=True)
+    grid.check("Let a short song share a column with the next", "pack_songs", default=True)
     grid.number("Minimum room to start a song (mm)", "min_orphan_mm", 22.0,
                 low=0, high=120, step=1)
     ttk.Label(

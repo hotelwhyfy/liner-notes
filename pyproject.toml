@@ -13,6 +13,7 @@ dependencies = [
     "pyyaml>=6.0",
     "pillow>=10.0",   # reportlab reads cover artwork through it
     "pymupdf>=1.24",  # rasterises panels for the editor's preview
+    "mutagen>=1.47",  # reads durations and tags when importing audio files
 ]
 
 [project.scripts]

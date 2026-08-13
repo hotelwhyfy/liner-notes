@@ -14,6 +14,9 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from ..audio import AUDIO_SUFFIXES
+from ..audio import available as audio_available
+from ..audio import import_audio
 from ..errors import LinerNotesError
 from ..imposition import render_press
 from ..render import render_reader
@@ -27,6 +30,7 @@ from .editors import (
     build_notes_pane,
     build_track_pane,
     build_tracks_pane,
+    build_writers_pane,
 )
 from .preview import PreviewPane
 
@@ -35,6 +39,7 @@ REBUILD_DELAY_MS = 350
 SECTIONS = (
     ("album", "Album"),
     ("tracks", "Tracks"),
+    ("writers", "Songwriters"),
     ("credits", "Credits"),
     ("notes", "Liner notes"),
     ("copyright", "Copyright"),
@@ -84,6 +89,11 @@ class LinerNotesApp:
         file_menu.add_command(label="Save", accelerator="Cmd+S", command=self.save)
         file_menu.add_command(label="Save As…", command=self.save_as)
         file_menu.add_separator()
+        file_menu.add_command(label="Import audio files…", accelerator="Cmd+I",
+                              command=self.import_audio_files)
+        file_menu.add_command(label="Import a folder of audio…",
+                              command=self.import_audio_folder)
+        file_menu.add_separator()
         file_menu.add_command(label="Export both PDFs…", accelerator="Cmd+E",
                               command=self.export_both)
         file_menu.add_command(label="Export reader PDF…", command=self.export_reader)
@@ -108,6 +118,7 @@ class LinerNotesApp:
             self.root.bind_all(f"<{mod}-o>", lambda _e: self.open())
             self.root.bind_all(f"<{mod}-s>", lambda _e: self.save())
             self.root.bind_all(f"<{mod}-e>", lambda _e: self.export_both())
+            self.root.bind_all(f"<{mod}-i>", lambda _e: self.import_audio_files())
             self.root.bind_all(f"<{mod}-r>", lambda _e: self.rebuild_now())
         self.root.protocol("WM_DELETE_WINDOW", self.quit)
 
@@ -212,6 +223,10 @@ class LinerNotesApp:
             return
         self.selection = picked[0]
         self._show_pane()
+        # A new selection is the user saying what they are working on, so the
+        # preview goes back to following the editor even if they had paged away.
+        self.preview.unpin()
+        self._follow_selection()
 
     def _show_pane(self) -> None:
         for child in self.editor_holder.winfo_children():
@@ -221,6 +236,7 @@ class LinerNotesApp:
         builders = {
             "album": build_album_pane,
             "tracks": build_tracks_pane,
+            "writers": build_writers_pane,
             "credits": build_credits_pane,
             "notes": build_notes_pane,
             "copyright": build_copyright_pane,
@@ -235,6 +251,50 @@ class LinerNotesApp:
                 self.editor_holder, self.doc, self.on_change
             )
         pane.pack(fill="both", expand=True)
+
+    # -- keeping the preview on what is being edited -------------------------
+
+    def _panel_for_selection(self) -> int | None:
+        """The 1-based panel the current navigator selection prints on.
+
+        The planner records where each section landed, so this survives a song
+        being packed onto the end of the previous panel or flowing onto a new
+        one. ``None`` means the selection has no panel of its own — Design and
+        Layout change every panel, so the preview stays where it is.
+        """
+        outcome = self._outcome
+        if not outcome or not outcome.ok or outcome.booklet is None:
+            return None
+        placement = outcome.booklet.plan.placement
+        panels = outcome.booklet.panels
+        key = self.selection
+
+        if key == "album":
+            return 1                       # the cover is what the album pane makes
+        if key == "copyright":
+            return panels[-1].index        # the colophon is always last
+        if key == "tracks":
+            return placement.get("tracklist")
+        if key == "notes":
+            return placement.get("note-0")
+        if key in ("writers", "credits"):
+            # Both feed the credit panels; show the first one either way.
+            for candidate in ("songwriter-credits", "writer-index", "personnel"):
+                if candidate in placement:
+                    return placement[candidate]
+            return None
+        if key.startswith("track:"):
+            index = int(key.split(":", 1)[1])
+            if index < len(self.doc.tracks):
+                track = self.doc.tracks[index]
+                number = track.get("number", index + 1) if isinstance(track, dict) else index + 1
+                return placement.get(f"track-{number}")
+        return None
+
+    def _follow_selection(self) -> None:
+        panel = self._panel_for_selection()
+        if panel is not None:
+            self.preview.follow(panel - 1)   # placement is 1-based, the pane 0-based
 
     # -- the edit loop -------------------------------------------------------
 
@@ -257,6 +317,7 @@ class LinerNotesApp:
 
         if outcome.ok and outcome.booklet is not None:
             self.preview.show(outcome.booklet)
+            self._follow_selection()
             panels = len(outcome.booklet.panels)
             self.status.configure(
                 text=f"{panels} panels · {panels // 4} sheets · "
@@ -308,8 +369,9 @@ class LinerNotesApp:
         mark = " •" if self.doc.dirty else ""
         self.root.title(f"linernotes — {self.doc.display_name}{mark}")
 
-    def _reload_all(self) -> None:
-        self.selection = "album"
+    def _reload_all(self, select: str = "album") -> None:
+        self.selection = select
+        self.preview.unpin()
         self._rebuild_nav()
         self._show_pane()
         self._update_title()
@@ -386,6 +448,107 @@ class LinerNotesApp:
         self._reload_all()
         self.status.configure(text=f"saved {self.doc.path}")
         return True
+
+    # -- importing audio -----------------------------------------------------
+
+    def import_audio_files(self) -> None:
+        patterns = " ".join(f"*{s}" for s in sorted(AUDIO_SUFFIXES))
+        chosen = filedialog.askopenfilenames(
+            parent=self.root,
+            title="Import audio files",
+            initialdir=str(self.doc.source_dir),
+            filetypes=[("Audio files", patterns), ("All files", "*")],
+        )
+        if chosen:
+            self._import_audio(list(chosen))
+
+    def import_audio_folder(self) -> None:
+        chosen = filedialog.askdirectory(
+            parent=self.root,
+            title="Import every audio file in a folder",
+            initialdir=str(self.doc.source_dir),
+        )
+        if chosen:
+            self._import_audio([chosen])
+
+    def _import_audio(self, paths: list[str]) -> None:
+        """Turn a selection of audio files into the running order.
+
+        Titles and durations come from the files; writers deliberately do not.
+        A track with no writers of its own inherits the album's songwriters, so
+        importing forty files does not mean typing one name forty times.
+        """
+        existing = len(self.doc.tracks)
+        append = False
+        if existing:
+            answer = messagebox.askyesnocancel(
+                "Import audio",
+                f"This album already lists {existing} track"
+                f"{'s' if existing != 1 else ''}.\n\n"
+                "Replace them with the files you chose?\n"
+                "Choose No to add the files after the ones already there.",
+                parent=self.root,
+            )
+            if answer is None:
+                return
+            append = not answer
+
+        try:
+            result = import_audio(paths, start_number=existing + 1 if append else 1)
+        except Exception as exc:  # noqa: BLE001 - a bad folder is a message, not a crash
+            messagebox.showerror("Import failed", str(exc), parent=self.root)
+            return
+
+        if not result.tracks:
+            messagebox.showinfo(
+                "Nothing to import",
+                "No audio files were found in what you chose.",
+                parent=self.root,
+            )
+            return
+
+        if append:
+            self.doc.tracks.extend(result.tracks)
+        else:
+            self.doc.tracks[:] = result.tracks
+
+        filled = self._fill_album_from_tags(result)
+        self._reload_all(select="tracks")
+
+        notes = [result.summary()]
+        if filled:
+            notes.append("filled " + ", ".join(filled) + " from the tags")
+        if result.unreadable:
+            notes.append(f"{len(result.unreadable)} file(s) had no readable tags")
+        if not audio_available():
+            notes.append("install 'mutagen' to read durations")
+        self.status.configure(text="imported " + " · ".join(notes))
+
+    def _fill_album_from_tags(self, result) -> list[str]:
+        """Take album title, artist, year and songwriter from the tags — but
+        only where the document has nothing yet. An import never overwrites
+        something typed by hand."""
+        filled: list[str] = []
+        meta = self.doc.section("album")
+
+        def blank(key: str) -> bool:
+            value = str(meta.get(key, "") or "").strip()
+            # "Untitled" is what a new document starts as, not a title someone chose.
+            return not value or (key == "title" and value == "Untitled")
+
+        for key, value, label in (
+            ("title", result.album, "album title"),
+            ("artist", result.artist, "artist"),
+            ("year", result.year, "year"),
+        ):
+            if value and blank(key):
+                meta[key] = value
+                filled.append(label)
+
+        if result.composers and not self.doc.writers:
+            self.doc.writers.extend({"name": name} for name in result.composers)
+            filled.append("songwriter" + ("s" if len(result.composers) > 1 else ""))
+        return filled
 
     # -- export --------------------------------------------------------------
 

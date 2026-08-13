@@ -27,6 +27,16 @@ def hex_to_rgb(value: str | tuple[float, float, float]) -> tuple[float, float, f
     return tuple(int(text[i : i + 2], 16) / 255.0 for i in (0, 2, 4))  # type: ignore[return-value]
 
 
+def is_dark(rgb: tuple[float, float, float]) -> bool:
+    """Would light type read better than dark type on this colour?
+
+    Perceived brightness, so a saturated blue counts as dark and a yellow of the
+    same numeric value does not.
+    """
+    r, g, b = rgb
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) < 0.5
+
+
 # ---------------------------------------------------------------------------
 # Geometry
 # ---------------------------------------------------------------------------
@@ -314,8 +324,9 @@ class Group:
 class Background:
     color: tuple[float, float, float] | None = None
     image: str | None = None
-    scrim: bool = False       # dark gradient at the foot, for cover type
-    fit: str = "cover"        # cover | contain
+    scrim: bool = False        # dark gradient at the foot, for type over artwork
+    scrim_height: float = 0.52  # how far up the panel that gradient reaches
+    fit: str = "cover"         # cover | contain
 
 
 @dataclass
@@ -378,7 +389,9 @@ class Section:
     size_max: float
     size_min: float
     step: float = 0.25
-    start_new_panel: bool = False
+    # Start at the top of a fresh column. With one column to a panel that is the
+    # same thing as starting a fresh panel, which is what it used to be.
+    start_new_column: bool = False
     splittable: bool = True
     kind: str = "content"
     label: str = ""
@@ -389,32 +402,66 @@ class PlanResult:
     panels: list[Panel]
     shrunk: dict[str, float] = field(default_factory=dict)   # key -> chosen size
     flowed: dict[str, int] = field(default_factory=dict)     # key -> panels spanned
+    placement: dict[str, int] = field(default_factory=dict)  # key -> first panel index
 
 
 class PanelPlanner:
-    """Places sections onto panels: shrink to fit, then flow if still too tall."""
+    """Places sections onto panels: shrink to fit, then flow if still too tall.
 
-    def __init__(self, geo: Geometry, log: IssueLog, first_index: int = 1):
+    A panel is divided into ``columns`` text columns, filled left to right; a
+    column behaves exactly like a panel did when there was only one of them, so
+    everything below reads "column" where it used to read "panel".
+    """
+
+    def __init__(
+        self,
+        geo: Geometry,
+        log: IssueLog,
+        first_index: int = 1,
+        columns: int = 1,
+        column_gap: float = 0.0,
+    ):
         self.geo = geo
         self.log = log
+        self.columns = max(1, int(columns))
+        self.column_gap = column_gap if self.columns > 1 else 0.0
         self.panels: list[Panel] = []
         self.next_index = first_index
-        self.cursor = 0.0      # points consumed from the top of the current panel
+        self.column = 0        # which column of the current panel is being filled
+        self.cursor = 0.0      # points consumed from the top of the current column
         self.result = PlanResult(panels=self.panels)
 
     # -- panel bookkeeping ---------------------------------------------------
+
+    @property
+    def column_w(self) -> float:
+        gaps = self.column_gap * (self.columns - 1)
+        return (self.geo.content_w - gaps) / self.columns
 
     def _new_panel(self, kind: str = "content", label: str = "") -> Panel:
         panel = Panel(index=self.next_index, kind=kind, label=label)
         self.next_index += 1
         self.panels.append(panel)
+        self.column = 0
         self.cursor = 0.0
         return panel
+
+    def _next_column(self, kind: str = "content", label: str = "") -> None:
+        """Move to the next column, or to a new panel once they are used up."""
+        if self.column + 1 < self.columns:
+            self.column += 1
+            self.cursor = 0.0
+            return
+        self._new_panel(kind, label)
 
     def _current(self, kind: str = "content", label: str = "") -> Panel:
         if not self.panels:
             return self._new_panel(kind, label)
         return self.panels[-1]
+
+    @property
+    def at_panel_start(self) -> bool:
+        return self.column == 0 and self.cursor == 0.0
 
     @property
     def remaining(self) -> float:
@@ -426,9 +473,10 @@ class PanelPlanner:
         panel = self._current()
         panel.items.append(
             Placed(
-                x=self.geo.content_x(panel.index),
+                x=self.geo.content_x(panel.index)
+                + self.column * (self.column_w + self.column_gap),
                 top=self.geo.content_top() - self.cursor,
-                width=self.geo.content_w,
+                width=self.column_w,
                 block=block,
             )
         )
@@ -437,17 +485,19 @@ class PanelPlanner:
     # -- placement -----------------------------------------------------------
 
     def add_section(self, section: Section) -> None:
-        width = self.geo.content_w
+        width = self.column_w
         sizes = _size_ladder(section.size_max, section.size_min, section.step)
 
-        if not self.panels or (section.start_new_panel and self.cursor > 0):
+        if not self.panels:
             self._new_panel(section.kind, section.label)
-        elif self.cursor == 0:
+        elif section.start_new_column and self.cursor > 0:
+            self._next_column(section.kind, section.label)
+        elif self.at_panel_start:
             panel = self._current()
             panel.kind = section.kind
             panel.label = panel.label or section.label
 
-        # 1. Fit in whatever is left on the current panel.
+        # 1. Fit in whatever is left in the current column.
         if self.remaining > 0:
             for size in sizes:
                 blocks = section.build(size)
@@ -455,23 +505,24 @@ class PanelPlanner:
                     self._commit(section, blocks, size, width)
                     return
 
-        # 2. Fit on a fresh panel.
+        # 2. Fit in a fresh column.
         for size in sizes:
             blocks = section.build(size)
             if sum(b.height(width) for b in blocks) <= self.geo.content_h:
-                self._new_panel(section.kind, section.label)
+                self._next_column(section.kind, section.label)
                 self._commit(section, blocks, size, width)
                 return
 
-        # 3. Taller than a panel even at the smallest size: flow across panels.
+        # 3. Taller than a column even at the smallest size: flow across columns.
         if not section.splittable:
             raise LayoutError(
-                f"section '{section.key}' does not fit on one panel and cannot be split"
+                f"section '{section.key}' does not fit in one column and cannot be split"
             )
         self.result.shrunk[section.key] = section.size_min
         self._flow(section, section.build(section.size_min), width)
 
     def _commit(self, section: Section, blocks: list[Block], size: float, width: float) -> None:
+        self.result.placement[section.key] = self._current().index
         for block in blocks:
             self._place(block, block.height(width))
         if size < section.size_max - 1e-9:
@@ -479,8 +530,9 @@ class PanelPlanner:
 
     def _flow(self, section: Section, blocks: list[Block], width: float) -> None:
         if self.remaining < self.geo.content_h * 0.3:
-            self._new_panel(section.kind, section.label)
+            self._next_column(section.kind, section.label)
         start_index = self._current().index
+        self.result.placement[section.key] = start_index
         queue: list[Block] = list(blocks)
 
         guard = 0
@@ -498,15 +550,15 @@ class PanelPlanner:
                 self._place(head, head.height(width))
             if tail is not None:
                 queue.insert(0, tail)
-                self._new_panel(section.kind, f"{section.label} (cont.)")
+                self._next_column(section.kind, f"{section.label} (cont.)")
             elif head is None:
                 if self.cursor == 0:
                     raise LayoutError(
-                        f"a block in section '{section.key}' is taller than a whole panel "
+                        f"a block in section '{section.key}' is taller than a whole column "
                         "and cannot be split"
                     )
                 queue.insert(0, block)
-                self._new_panel(section.kind, f"{section.label} (cont.)")
+                self._next_column(section.kind, f"{section.label} (cont.)")
 
         spanned = self._current().index - start_index + 1
         if spanned > 1:
@@ -515,9 +567,9 @@ class PanelPlanner:
     # -- finishing -----------------------------------------------------------
 
     def ensure_room(self, needed: float) -> None:
-        """Start a new panel unless at least ``needed`` points remain."""
+        """Start a new column unless at least ``needed`` points remain."""
         if self.panels and self.remaining < needed:
-            self._new_panel()
+            self._next_column()
 
     def finish(self) -> PlanResult:
         return self.result
