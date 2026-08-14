@@ -32,6 +32,33 @@ PyMuPDF — which rasterises panels for the editor's preview — and mutagen, wh
 durations and tags out of audio files. Without mutagen an import still reads the running
 order from the filenames, only without durations.
 
+## Building a native app
+
+```sh
+python3 build.py
+```
+
+Freezes the editor into something that runs without Python installed. What comes out
+depends on the machine it was run on:
+
+| Built on | Output |
+| --- | --- |
+| macOS | `dist/linernotes.app` — double-clickable, opens `.yaml` files dropped on it |
+| Windows | `dist/linernotes/linernotes.exe` |
+| Linux | `dist/linernotes/linernotes` |
+
+PyInstaller freezes the interpreter it runs under, so it cannot cross-compile: a Windows
+build has to happen on Windows and a macOS build on macOS. Same command on both.
+
+`--onefile` collapses the folder into a single executable, which is easier to hand
+someone but slower to start, since it unpacks itself on every launch. `--clean` throws
+away `build/` and `dist/` first, worth doing when a dependency changed and the build
+starts behaving oddly.
+
+The macOS bundle is unsigned, so the first launch needs right-click → Open — Gatekeeper
+refuses a plain double-click. Signing and notarising it (`codesign`, `notarytool`) is the
+fix if you're distributing it properly.
+
 ## The editor
 
 ```sh

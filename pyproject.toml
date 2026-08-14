@@ -16,6 +16,10 @@ dependencies = [
     "mutagen>=1.47",  # reads durations and tags when importing audio files
 ]
 
+[project.optional-dependencies]
+# Only needed to compile the native app; see build.py.
+build = ["pyinstaller>=6.16"]
+
 [project.scripts]
 linernotes-gui = "linernotes.gui.app:main"
 

@@ -297,16 +297,52 @@ def _prewrapped(lines: list[str], style: Style, width: float) -> _PreWrapped:
 
 @dataclass
 class Group:
-    """Blocks that must stay on one panel — a song title and its credit line,
-    for instance, should never be stranded at the foot of a panel."""
+    """Blocks that belong together at a column break.
+
+    An atomic group moves whole — a name and the line under it, say. A group
+    that is not atomic may break, but never in its first block: a song title
+    followed by lyrics keeps at least the opening of the song with the title
+    instead of being left alone at the foot of a column, while the rest of the
+    song still flows on as far as it needs to.
+    """
 
     blocks: list[Block]
+    atomic: bool = True
 
     def height(self, width: float) -> float:
         return sum(b.height(width) for b in self.blocks)
 
     def split(self, width: float, available: float):
-        return (self, None) if self.height(width) <= available else (None, self)
+        if self.height(width) <= available:
+            return self, None
+        if self.atomic:
+            return None, self
+
+        head: list[Block] = []
+        rest = list(self.blocks)
+        used = 0.0
+        while rest:
+            block = rest[0]
+            height = block.height(width)
+            if used + height <= available:
+                head.append(rest.pop(0))
+                used += height
+                continue
+            first, second = block.split(width, available - used)
+            rest.pop(0)
+            if first is not None:
+                head.append(first)
+            if second is not None:
+                rest.insert(0, second)
+            break
+
+        # Nothing but the opening block fits, which is the orphan this exists to
+        # prevent: send the whole group on rather than leave a title behind.
+        if len(head) < 2:
+            return None, self
+        if not rest:
+            return Group(head, self.atomic), None
+        return Group(head, self.atomic), Group(rest, self.atomic)
 
     def draw(self, canvas, x: float, top: float, width: float) -> None:
         y = top

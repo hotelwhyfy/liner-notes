@@ -17,7 +17,7 @@ hand, so a writer added to a track cannot go missing from the credits panel.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from reportlab.lib.units import mm
 
@@ -36,6 +36,7 @@ from .layout import (
     Spacer,
     Style,
     Text,
+    _size_ladder,
     blanks_needed,
     compose_panel,
     hex_to_rgb,
@@ -157,6 +158,16 @@ class Theme:
             color=self.ink,
         )
 
+    def note_body(self, base: float) -> Style:
+        """Liner notes and thank-yous: the size of the lyrics, lighter and
+        italic, so a page of prose reads as an aside rather than as a song."""
+        return Style(
+            font=self.fonts.get("body", "italic"),
+            size=base,
+            leading=base * 1.4,
+            color=self.muted,
+        )
+
     def cover_title(self, size: float) -> Style:
         return Style(
             font=self.fonts.get("display", "bold"),
@@ -270,18 +281,19 @@ def build_booklet(album: Album, geo: Geometry, fonts: FontSet, log: IssueLog) ->
 
     cover = _cover_panel(album, geo, theme)
 
-    planner = PanelPlanner(
-        geo, log, first_index=2,
-        columns=opts.columns, column_gap=opts.column_gap_mm * mm,
-    )
-    for section in _sections(album, theme, opts):
-        planner.add_section(section)
-    plan = planner.finish()
+    plan = _fit_to_sheets(album, geo, theme, opts, log)
 
     content_panels = plan.panels
     # The colophon always gets the final panel; blanks are inserted before it.
     before_colophon = 1 + len(content_panels)
     pad = blanks_needed(before_colophon + 1)
+    if pad:
+        log.warn(
+            "layout.blanks",
+            f"{pad} blank panel{'s' if pad > 1 else ''} before the colophon: the "
+            "booklet has to be a multiple of four panels and the type could not "
+            "be set small enough to close the gap",
+        )
     blanks = [
         Panel(index=before_colophon + 1 + i, kind="blank", label="blank")
         for i in range(pad)
@@ -312,6 +324,55 @@ def build_booklet(album: Album, geo: Geometry, fonts: FontSet, log: IssueLog) ->
         log.info("layout.flow", f"'{key}' continues across {span} panels")
 
     return Booklet(album=album, geo=geo, panels=panels, plan=plan)
+
+
+def _plan_content(
+    album: Album, geo: Geometry, theme: Theme, opts, log: IssueLog,
+    cap: float | None = None,
+) -> PlanResult:
+    planner = PanelPlanner(
+        geo, log, first_index=2,
+        columns=opts.columns, column_gap=opts.column_gap_mm * mm,
+    )
+    for section in _sections(album, theme, opts, cap):
+        planner.add_section(section)
+    return planner.finish()
+
+
+def _fit_to_sheets(
+    album: Album, geo: Geometry, theme: Theme, opts, log: IssueLog
+) -> PlanResult:
+    """Plan the inside of the booklet onto a whole number of sheets.
+
+    A saddle-stitched booklet is folded paper, so it is always a multiple of
+    four panels. Padding the difference with blanks leaves empty pages in the
+    middle of the record; setting the type a little smaller so the content ends
+    where a sheet ends does not. So the type is capped a quarter-point at a time
+    until the panel count lands on a sheet boundary, and the largest size that
+    does is the one kept. If nothing fits — a booklet with one panel of content
+    has nowhere to go — the blanks come back.
+    """
+    plan = _plan_content(album, geo, theme, opts, log)
+    if _on_sheet_boundary(len(plan.panels)):
+        return plan
+
+    ceiling = max(opts.lyric_size_max, opts.credit_size_max)
+    floor = min(opts.lyric_size_min, opts.credit_size_min)
+    for cap in _size_ladder(ceiling, floor, 0.25):
+        trial = _plan_content(album, geo, theme, opts, log, cap=cap)
+        if _on_sheet_boundary(len(trial.panels)):
+            log.info(
+                "layout.sheets",
+                f"type capped at {cap:g}pt so the booklet fills "
+                f"{(len(trial.panels) + 2) // 4} sheet(s) with no blank panels",
+            )
+            return trial
+    return plan
+
+
+def _on_sheet_boundary(content_panels: int) -> bool:
+    """Content plus the cover and the colophon, with nothing left over."""
+    return content_panels >= 1 and blanks_needed(content_panels + 2) == 0
 
 
 def _cover_panel(album: Album, geo: Geometry, theme: Theme) -> Panel:
@@ -348,21 +409,33 @@ def _cover_panel(album: Album, geo: Geometry, theme: Theme) -> Panel:
     return panel
 
 
-def _sections(album: Album, theme: Theme, opts) -> list[Section]:
-    sections: list[Section] = []
-    sections.append(_tracklist_section(album, theme, opts))
+def _sections(album: Album, theme: Theme, opts, cap: float | None = None) -> list[Section]:
+    """The inside of the booklet, in order.
 
+    Each song appears exactly once: title, lyrics, then everything credited to
+    it. There is no separate track listing and no songwriter credits panel —
+    they said the same things over again, and a credit is easiest to check
+    against the song it belongs to.
+
+    ``cap`` clamps every section's largest type size, which is how the booklet
+    is squeezed onto a whole number of sheets without blank panels.
+    """
+    sections: list[Section] = []
     for track in album.tracks:
         sections.append(_lyric_section(track, theme, opts))
 
     for i, note in enumerate(album.notes):
         sections.append(_note_section(note, theme, opts, index=i))
 
-    sections.append(_songwriter_credits_section(album, theme, opts))
-    sections.append(_writer_index_section(album, theme, opts))
     if album.personnel or album.production:
         sections.append(_personnel_section(album, theme, opts))
-    return sections
+
+    if cap is None:
+        return sections
+    return [
+        replace(s, size_max=min(s.size_max, cap), size_min=min(s.size_min, cap))
+        for s in sections
+    ]
 
 
 def _heading(theme: Theme, text: str, base: float) -> list[Block]:
@@ -372,65 +445,56 @@ def _heading(theme: Theme, text: str, base: float) -> list[Block]:
     ]
 
 
-def _tracklist_section(album: Album, theme: Theme, opts) -> Section:
-    def build(base: float) -> list[Block]:
-        blocks: list[Block] = _heading(theme, "Tracks", base)
-        entry = theme.credit_entry(base)
-        sub = theme.credit_sub(base)
-        for track in album.tracks:
-            head = f"{track.number}.  {track.title}"
-            if track.duration:
-                head += f"   {track.duration}"
-            group: list[Block] = [Text(head, entry)]
-            credit = writing_credit_phrase(track)
-            if credit:
-                group.append(Text(credit, sub))
-            group.append(Spacer(base * 0.55))
-            blocks.append(Group(group))
-        return blocks
+def song_credit_lines(track: Track) -> list[str]:
+    """Everything credited to one song, printed under its lyrics.
 
-    return Section(
-        key="tracklist",
-        build=build,
-        size_max=opts.credit_size_max,
-        size_min=opts.credit_size_min,
-        start_new_column=True,
-        kind="content",
-        label="track listing",
-    )
+    This is the only place a song's credits appear, so it carries the long-form
+    writing credit — roles, shares and publishers — and not just the names.
+    """
+    lines = detailed_credit_lines(track)
+
+    extras: list[str] = []
+    if track.duration:
+        extras.append(track.duration)
+    if track.arranger:
+        extras.append(f"Arranged by {track.arranger}")
+    if track.producer:
+        extras.append(f"Produced by {track.producer}")
+    if track.recorded_at:
+        extras.append(f"Recorded at {track.recorded_at}")
+    if track.notes:
+        extras.append(track.notes)
+    if extras:
+        lines.append(" · ".join(extras))
+    return lines
 
 
 def _lyric_section(track: Track, theme: Theme, opts) -> Section:
     def build(base: float) -> list[Block]:
-        # No "Lyrics" heading and no track number: inside the booklet a song is
-        # announced by its title alone.
-        head_blocks: list[Block] = [Text(track.title, theme.song_title(base))]
-        credit = writing_credit_phrase(track)
-        if credit:
-            head_blocks.append(Text(credit, theme.song_credit(base)))
-
-        body: list[Block] = []
+        # Title, then the words, then who made them: no heading over the song
+        # and no track number, and nothing here is repeated anywhere else.
         lyrics = track.lyrics.strip()
         if lyrics:
-            body.append(Text(lyrics, theme.lyric(base)))
+            body: Block = Text(lyrics, theme.lyric(base))
         elif track.instrumental:
-            body.append(Text("Instrumental", theme.lyric_note(base)))
+            body = Text("Instrumental", theme.lyric_note(base))
         else:
-            body.append(Text("[lyrics not supplied]", theme.lyric_note(base)))
+            body = Text("[lyrics not supplied]", theme.lyric_note(base))
 
-        extras: list[str] = []
-        if track.arranger:
-            extras.append(f"Arranged by {track.arranger}")
-        if track.producer:
-            extras.append(f"Produced by {track.producer}")
-        if track.recorded_at:
-            extras.append(f"Recorded at {track.recorded_at}")
-        if track.notes:
-            extras.append(track.notes)
-        if extras:
-            body.append(Text(" · ".join(extras), theme.lyric_note(base)))
+        # Not atomic: a long song still flows across columns, but its title
+        # always keeps the first lines of it company.
+        blocks: list[Block] = [
+            Group([Text(track.title, theme.song_title(base)), body], atomic=False)
+        ]
 
-        return [Group(head_blocks), *body, Spacer(base * 1.5)]
+        credits = song_credit_lines(track)
+        if credits:
+            blocks.append(Spacer(base * 0.7))
+            for line in credits:
+                blocks.append(Text(line, theme.song_credit(base)))
+
+        blocks.append(Spacer(base * 1.5))
+        return blocks
 
     return Section(
         key=f"track-{track.number}",
@@ -450,73 +514,20 @@ def _note_section(note, theme: Theme, opts, index: int) -> Section:
         blocks: list[Block] = []
         if note.title:
             blocks.extend(_heading(theme, note.title, base))
-        blocks.append(Text(note.body.strip(), theme.body(base)))
+        blocks.append(Text(note.body.strip(), theme.note_body(base)))
         blocks.append(Spacer(base * 1.2))
         return blocks
 
     return Section(
         key=f"note-{index}",
         build=build,
-        size_max=opts.credit_size_max + 0.5,
-        size_min=opts.credit_size_min,
+        # Set with the lyrics rather than with the small print: a thank-you is
+        # read, not looked up.
+        size_max=opts.lyric_size_max,
+        size_min=opts.lyric_size_min,
         start_new_column=index == 0,
         kind="content",
         label=note.title or f"note {index + 1}",
-    )
-
-
-def _songwriter_credits_section(album: Album, theme: Theme, opts) -> Section:
-    def build(base: float) -> list[Block]:
-        blocks: list[Block] = _heading(theme, "Songwriter credits", base)
-        entry = theme.credit_entry(base)
-        sub = theme.credit_sub(base)
-        for track in album.tracks:
-            head = f"{track.number}.  {track.title}"
-            if track.duration:
-                head += f"  ({track.duration})"
-            group: list[Block] = [Text(head, entry)]
-            for line in detailed_credit_lines(track):
-                group.append(Text(line, sub))
-            group.append(Spacer(base * 0.6))
-            blocks.append(Group(group))
-        return blocks
-
-    return Section(
-        key="songwriter-credits",
-        build=build,
-        size_max=opts.credit_size_max,
-        size_min=opts.credit_size_min,
-        start_new_column=True,
-        kind="credits",
-        label="songwriter credits",
-    )
-
-
-def _writer_index_section(album: Album, theme: Theme, opts) -> Section:
-    rows = album.writer_index()
-
-    def build(base: float) -> list[Block]:
-        blocks: list[Block] = _heading(theme, "Writers", base)
-        entry = theme.credit_entry(base)
-        sub = theme.credit_sub(base)
-        for name, tracks, publishers in rows:
-            group: list[Block] = [
-                Text(f"{name} — {compress_numbers(tracks)}", entry)
-            ]
-            if publishers:
-                group.append(Text(" / ".join(publishers), sub))
-            group.append(Spacer(base * 0.4))
-            blocks.append(Group(group))
-        blocks.append(Spacer(base * 0.8))
-        return blocks
-
-    return Section(
-        key="writer-index",
-        build=build,
-        size_max=opts.credit_size_max,
-        size_min=opts.credit_size_min,
-        kind="credits",
-        label="writer index",
     )
 
 
