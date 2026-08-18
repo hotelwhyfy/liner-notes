@@ -186,20 +186,28 @@ hold in memory. Both return the laid-out `Booklet` and the `IssueLog`.
 
 The booklet is assembled in the order a jewel-case booklet is actually read:
 
-| panel      | contents                                              |
-| ---------- | ----------------------------------------------------- |
-| 1          | front cover artwork                                   |
-| 2          | track listing                                         |
-| 2 …        | lyrics, one song after another                        |
-| …          | liner notes                                           |
-| …          | songwriter credits, then the writer index, personnel  |
-| last       | colophon — title, imprint, ℗ and © lines              |
+| panel      | contents                                                        |
+| ---------- | --------------------------------------------------------------- |
+| 1          | front cover artwork                                             |
+| 2 …        | lyrics, one song after another, each followed by its credits    |
+| …          | liner notes                                                     |
+| …          | personnel and production                                        |
+| last       | colophon — title, track listing, imprint, ℗ and © lines         |
 
 Inside pages are set in `layout.columns` columns (two by default), filled left to right;
-a section starts at the top of a fresh column rather than a fresh panel, so the track
-listing and the first song usually share panel 2. Songs carry no track number and there is
-no "Lyrics" heading — a song is announced by its title, set in bold at the same size as
-everything else on the page.
+a section starts at the top of a fresh column rather than a fresh panel, so two short songs
+usually share a panel. Songs carry no track number and there is no "Lyrics" heading — a song
+is announced by its title, set in bold at the same size as everything else on the page.
+
+There is no separate track listing panel and no songwriter credits panel: a song's writers,
+publishers and recording notes are set in small print directly under it, which is where they
+can be checked against the song they belong to. The running order is printed once, on the
+colophon, numbered with the durations set flush right — where a track listing goes on a CD.
+Durations appear nowhere else; a time under a song's credits has nothing to line up against.
+
+If the running order will not fit on the colophon, the times are dropped first and then the
+listing itself, so the imprint and copyright lines always survive. Both cases log a warning
+rather than silently shortening the panel.
 
 A saddle-stitched booklet is folded sheets, so the panel count must be a multiple of four.
 Blank panels are inserted *before* the colophon, which always takes the final panel.
@@ -301,8 +309,9 @@ Written at the top level or nested under `album:` (top level wins).
 | `ink`              | `"#141414"` | body text colour                           |
 | `accent`           | `"#8a7a5e"` | section headings and rules                 |
 | `muted`            | `"#6b6b6b"` | credits and small print                    |
-| `cover_overlay`    | `true`      | print artist and title over the cover art  |
+| `cover_overlay`    | `false`     | print artist and title over the cover art  |
 | `cover_scrim`      | `true`      | dark gradient behind that type             |
+| `back_cover_text`  | `true`      | print the colophon over the back panel     |
 | `fonts`            | `{}`        | see below                                  |
 
 The back panel is either artwork or a flat colour. `back_cover_mode: artwork` uses the
@@ -311,6 +320,12 @@ stay in the file while a colour is tried. `auto` — what a file that does not m
 gets — takes the image when there is one and the colour when there is not. On a solid
 colour the colophon type flips to white or black if the colour is the same tone as the ink;
 over artwork the type is left as it is.
+
+`back_cover_text: false` leaves the back panel as artwork or colour alone. The panel is still
+printed — the booklet is imposed on a fixed number of panels — but the title, track listing,
+imprint and copyright lines are not, which means the ℗ and © lines then appear nowhere in the
+booklet. `cover_overlay` is off by default for the same reason a sleeve usually is: most
+cover art already has the artist and title in the picture.
 
 `interior_color` paints every panel between the covers. Set it dark and `ink` light for a
 black booklet — if both come out the same tone the build warns rather than printing black

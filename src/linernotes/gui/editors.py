@@ -531,7 +531,9 @@ def build_design_pane(parent: tk.Misc, doc: AlbumDocument, on_change: OnChange) 
     grid.color("Muted", "muted", "#6b6b6b")
 
     grid.heading("Front cover")
-    grid.check("Print artist and title over the artwork", "cover_overlay", default=True)
+    # These defaults have to match Design's, or the box shows a state the
+    # renderer disagrees with until something writes the key.
+    grid.check("Print artist and title over the artwork", "cover_overlay", default=False)
     grid.check("Dark gradient behind that type", "cover_scrim", default=True)
 
     grid.heading("Back cover")
@@ -544,8 +546,12 @@ def build_design_pane(parent: tk.Misc, doc: AlbumDocument, on_change: OnChange) 
     grid.hint("The artwork is chosen under Album. A solid colour ignores it, so the "
               "image can stay in the file while you try one.")
     grid.color("Colour", "back_cover_color", paper)
-    grid.hint("Type on the back panel flips to white or black to stay readable "
-              "on a colour that matches the ink.")
+    grid.check("Print the title, imprint and copyright over it", "back_cover_text",
+               default=True)
+    grid.hint("Unchecked leaves the back panel as artwork alone — the copyright "
+              "lines then appear nowhere in the booklet. Type on the back panel "
+              "flips to white or black to stay readable on a colour that matches "
+              "the ink.")
 
     grid.heading("Fonts")
     fonts = design.get("fonts")

@@ -280,6 +280,64 @@ class Text:
         return x + width - w
 
 
+@dataclass
+class Row:
+    """One line of a track listing: title flush left, duration flush right.
+
+    The duration sits on the first baseline only. A title long enough to wrap
+    keeps its time on the line it started on, which is where the eye looks for
+    it — carrying it down to the last line would leave it stranded under the
+    turnover.
+
+    Atomic at a column break: a listing row is two or three words and splitting
+    one across panels reads as a mistake.
+    """
+
+    left: Text
+    right: str
+    right_style: Style
+    gap: float = 8.0
+
+    def _left_width(self, width: float) -> float:
+        if not self.right:
+            return width
+        rw = line_width(self.right, self.right_style.font,
+                        self.right_style.size, self.right_style.tracking)
+        # Never starve the title: a pathological duration string gives up its
+        # column rather than wrapping the title to one word per line.
+        return max(width - rw - self.gap, width * 0.45)
+
+    def height(self, width: float) -> float:
+        return self.left.height(self._left_width(width))
+
+    def split(self, width: float, available: float):
+        return (self, None) if self.height(width) <= available else (None, self)
+
+    def draw(self, canvas, x: float, top: float, width: float) -> None:
+        left_width = self._left_width(width)
+        self.left.draw(canvas, x, top, left_width)
+        if not self.right or not self.left.lines(left_width):
+            return
+
+        st = self.left.style
+        lh = st.line_height
+        # The same baseline arithmetic Text.draw uses for its first line; the
+        # two have to agree or the time sits off the title's line.
+        baseline = top - st.space_before - lh + lh * 0.24
+        rs = self.right_style
+        rw = line_width(self.right, rs.font, rs.size, rs.tracking)
+        canvas.saveState()
+        canvas.setFillColorRGB(*rs.color)
+        text = canvas.beginText()
+        text.setFont(rs.font, rs.size)
+        if rs.tracking:
+            text.setCharSpace(rs.tracking)
+        text.setTextOrigin(x + width - rw, baseline)
+        text.textLine(self.right)
+        canvas.drawText(text)
+        canvas.restoreState()
+
+
 class _PreWrapped(Text):
     """A Text whose lines are fixed — used for the halves produced by a split,
     so re-wrapping can never disagree with what was already measured."""

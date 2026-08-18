@@ -31,6 +31,7 @@ from .layout import (
     PanelPlanner,
     Placed,
     PlanResult,
+    Row,
     Rule,
     Section,
     Spacer,
@@ -91,13 +92,18 @@ class Theme:
         )
 
     def song_credit(self, base: float) -> Style:
+        """Small print under a song. Set below the lyrics rather than level with
+        them: a credit is checked once and then read past, and at the same size
+        it competes with the words for the eye. The floor keeps it legible when
+        the fitter has squeezed a long booklet down."""
+        size = max(base * 0.78, 5.4)
         return Style(
             font=self.fonts.get("body", "italic"),
-            size=base,
-            leading=base * 1.36,
+            size=size,
+            leading=size * 1.3,
             color=self.muted,
             collapse=True,
-            space_after=base * 0.45,
+            space_after=size * 0.45,
         )
 
     def lyric(self, base: float) -> Style:
@@ -219,7 +225,12 @@ def writing_credit_phrase(track: Track) -> str:
 
 
 def detailed_credit_lines(track: Track) -> list[str]:
-    """The long-form credit printed on the songwriter credits panel."""
+    """The long-form credit printed under a song: roles, shares, publishers.
+
+    The names stand on their own. Under a song title there is nothing else a
+    list of people set in small italics could mean, so 'Written by' is a word
+    every song pays for and none of them need.
+    """
     pieces: list[str] = []
     for w in track.writers:
         name = w.name.strip()
@@ -229,7 +240,10 @@ def detailed_credit_lines(track: Track) -> list[str]:
         if w.share is not None:
             bits.append(f"{w.share:g}%")
         pieces.append(f"{name} ({', '.join(bits)})" if bits else name)
-    lines = [f"Written by {join_names(pieces)}"]
+
+    lines: list[str] = []
+    if pieces:
+        lines.append(join_names(pieces))
     publishers = track.publishers_inline()
     if publishers:
         lines.append(publishers)
@@ -311,7 +325,7 @@ def build_booklet(album: Album, geo: Geometry, fonts: FontSet, log: IssueLog) ->
             f"{'dark' if is_dark(theme.ink) else 'light'}; the text will be hard to read",
         )
     colophon_index = before_colophon + pad + 1
-    colophon = _colophon_panel(album, geo, theme, colophon_index)
+    colophon = _colophon_panel(album, geo, theme, colophon_index, log)
 
     panels = [cover, *content_panels, *blanks, colophon]
     for expected, panel in enumerate(panels, start=1):
@@ -453,9 +467,10 @@ def song_credit_lines(track: Track) -> list[str]:
     """
     lines = detailed_credit_lines(track)
 
+    # No duration here. A time belongs to the track listing, set against the
+    # title where it can be scanned down a column; in a run of prose credits it
+    # is a number with nothing to line up against.
     extras: list[str] = []
-    if track.duration:
-        extras.append(track.duration)
     if track.arranger:
         extras.append(f"Arranged by {track.arranger}")
     if track.producer:
@@ -559,7 +574,37 @@ def _personnel_section(album: Album, theme: Theme, opts) -> Section:
     )
 
 
-def _colophon_panel(album: Album, geo: Geometry, theme: Theme, index: int) -> Panel:
+def _fits(blocks: list[Block], geo: Geometry) -> bool:
+    return sum(b.height(geo.content_w) for b in blocks) <= geo.content_h
+
+
+def _track_listing(
+    album: Album,
+    title_style: Style,
+    time_style: Style,
+    base: float,
+    times: bool = True,
+) -> list[Block]:
+    """The running order, numbered, with the durations set flush right.
+
+    Numbers are padded to the width of the longest one so the titles start on a
+    common left edge — a listing whose titles step rightwards at track ten is
+    the usual giveaway that it was set as plain text.
+    """
+    if not album.tracks:
+        return []
+    pad = len(str(len(album.tracks)))
+    rows: list[Block] = []
+    for n, track in enumerate(album.tracks, start=1):
+        label = Text(f"{str(n).rjust(pad)}.  {track.title}", title_style)
+        rows.append(Row(label, track.duration if times else "", time_style))
+    rows.append(Spacer(base * 1.1))
+    return rows
+
+
+def _colophon_panel(
+    album: Album, geo: Geometry, theme: Theme, index: int, log: IssueLog
+) -> Panel:
     base = album.layout.credit_size_max
     blocks: list[Block] = []
 
@@ -572,6 +617,20 @@ def _colophon_panel(album: Album, geo: Geometry, theme: Theme, index: int) -> Pa
         image=str(art) if has_art else None,
         scrim=False,
     )
+
+    # A back cover can be left as a picture. The panel still has to exist — the
+    # booklet is imposed on a fixed number of panels and dropping one would
+    # renumber every sheet — so it is returned empty rather than skipped.
+    if not album.design.back_cover_text:
+        return compose_panel(
+            geo,
+            index,
+            [],
+            kind="colophon",
+            label="colophon",
+            valign="middle",
+            background=background,
+        )
 
     # Over a solid fill the type has to be readable, and the ink was chosen for
     # the inside pages — so on a back cover of the same tone, invert it rather
@@ -617,8 +676,42 @@ def _colophon_panel(album: Album, geo: Geometry, theme: Theme, index: int) -> Pa
         collapse=True,
     )
 
+    listing_style = Style(
+        font=theme.fonts.get("meta", "regular"),
+        size=base * 0.84,
+        leading=base * 1.34,
+        color=ink,
+        collapse=True,
+    )
+    time_style = replace(listing_style, color=muted, align="right")
+
     blocks.append(Text(album.title, title_style))
     blocks.append(Text(album.artist, artist_style))
+
+    # The track listing lives here, not on the lyric pages: it is the one place
+    # the running order can be read down a column with the times lined up, and
+    # the back of the booklet is where a record buyer looks for it.
+    listing = _track_listing(album, listing_style, time_style, base)
+    if listing and _fits(listing + blocks, geo):
+        blocks.extend(listing)
+    elif listing:
+        # Rather than run the listing off the panel, drop the times and try the
+        # bare running order; if even that will not fit, the panel keeps the
+        # imprint and copyright, which are the parts that cannot be omitted.
+        bare = _track_listing(album, listing_style, time_style, base, times=False)
+        if _fits(bare + blocks, geo):
+            blocks.extend(bare)
+            log.warn(
+                "colophon.times",
+                f"the back panel fits {len(album.tracks)} titles but not their "
+                "durations, so the times are not printed",
+            )
+        else:
+            log.warn(
+                "colophon.listing",
+                f"the track listing ({len(album.tracks)} titles) does not fit on "
+                "the back panel and is not printed; the imprint and copyright are",
+            )
 
     imprint = " · ".join(x for x in (album.label, album.catalog, album.year) if x)
     if imprint:

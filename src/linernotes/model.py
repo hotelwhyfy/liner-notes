@@ -120,6 +120,7 @@ class Design:
     muted: str = "#6b6b6b"
     cover_overlay: bool = False      # print artist/title over the cover art
     cover_scrim: bool = True         # dark gradient behind that type
+    back_cover_text: bool = True     # print the colophon over the back panel
     back_scrim: bool = True          # same, behind the type on the back panel
     fonts: dict[str, Any] = field(default_factory=dict)
 
