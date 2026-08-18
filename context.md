@@ -7,20 +7,26 @@ state it is actually in.
 ## Where things stand
 
 The layout engine is complete and works. The editor is complete and works. The package is
-installable and has a launchable entry point.
+installable, has a launchable entry point, and can be frozen into a native app.
 
-Until recently the engine had **never produced a PDF**: `Text.draw` called
-`canvas.setCharSpace()`, which reportlab's `Canvas` does not have, and every panel with
+Under version control since August 2026 (`main`, two commits at the time of writing).
+
+The engine spent its whole early life unable to produce a PDF at all: `Text.draw` called
+`canvas.setCharSpace()`, which reportlab's `Canvas` does not have, so every panel with
 letter-spacing on it — every section heading, the cover line, the colophon — raised
-`AttributeError`. That is fixed; drawing now goes through a text object. Everything
-downstream of it turned out to be sound.
-
-Still not under version control. `git init` remains the most valuable ten seconds available.
+`AttributeError`. Fixed long since; drawing goes through a text object. Everything
+downstream of it turned out to be sound. The lesson stuck as the measurement/drawing
+invariant below.
 
 ## Layout
 
 ```
-pyproject.toml          installable; declares the console script
+pyproject.toml          installable; declares the console script and the [build] extra
+launch.sh               installs on first run, then starts the editor
+build.py                freezes the editor into a native app for the host OS
+packaging/
+  linernotes.spec       PyInstaller spec, platform-conditional
+  entry.py              the frozen app's entry point
 examples/
   slow-water.yaml       a complete album file, exercises most of the format
 src/linernotes/
@@ -69,11 +75,27 @@ still resolve cover art sitting next to the file it came from.
 
 ### Design decisions worth knowing
 
-**Credits are derived, never authored.** The track listing, the songwriter credits panel and
-the writer index are all generated from `tracks[].writers`. There is no way to write a
-credits panel by hand, deliberately: a writer added to a track cannot then go missing from
-the credits. `Writer.key` normalises whitespace and case so the same person spelled two ways
-still aggregates into one index entry.
+**Credits are derived, never authored.** Every credit is generated from `tracks[].writers`.
+There is no way to write a credits panel by hand, deliberately: a writer added to a track
+cannot then go missing from the credits. `Writer.key` normalises whitespace and case so the
+same person spelled two ways still aggregates into one entry.
+
+**Each fact is printed exactly once.** There is no track-listing panel and no songwriter
+credits panel; both existed once and were removed because they restated what the lyric pages
+already said. A song's writers, publishers and recording notes are set in small print under
+the song itself, where they can be checked against it. The running order is printed once, on
+the colophon.
+
+**Durations belong to the track listing, not to the credits.** They are set flush right
+against the numbered titles on the colophon and appear nowhere else. A bare time at the head
+of a prose credit run has nothing to line up against, which is what it looked like before.
+This is also why `layout.Row` exists — the engine had no way to set one thing flush left and
+another flush right on the same line, and `Row` draws the right-hand text on the *first*
+baseline only, so a title that wraps keeps its time on the line it started on.
+
+**Small print is small.** `Theme.song_credit` is `base * 0.78` with a 5.4pt floor. The floor
+matters because auto-shrink can drive `base` a long way down on a full booklet, and a credit
+that scales linearly with it eventually stops being legible at all.
 
 **Validation collects, it does not abort.** `IssueLog` gathers errors, warnings and info
 across the whole load, and `raise_if_errors()` is called once. Fixing an album file is one
@@ -102,20 +124,39 @@ invariant is what makes it safe to wrap a block once and place it on any panel.
 a block, both halves get frozen line lists. Re-wrapping at draw time could produce a
 different line count than was measured when the split decision was made.
 
-**`Group` is the do-not-break unit.** A song title and its credit line are grouped so the
-title is never stranded at the foot of a panel. `Group.split` refuses to split.
+**`Group` is the do-not-break unit.** An atomic group moves whole. A song title and the
+opening of its lyrics are grouped with `atomic=False`, which is the weaker guarantee: the
+group may break, but never in its first block, so the title always keeps at least the first
+lines of the song company while the rest flows on. `Group.split` returns the whole group to
+the next column if fewer than two blocks fit.
 
 **The colophon always takes the final panel.** `build_booklet` inserts blanks *before* it to
 reach a multiple of four, then asserts panel indices run 1..n without a gap. That assertion
 has caught numbering drift before; leave it in.
 
+**The colophon degrades rather than overflows.** It is composed with `compose_panel`, which
+places blocks without any overflow handling, so anything too tall simply runs off the panel.
+The track listing is therefore measured against `geo.content_h` before it is added: full
+listing, then the same listing without times, then nothing. Each fallback logs a warning
+(`colophon.times`, `colophon.listing`) — a shortened back panel must never be silent. If you
+add anything else to that panel, measure it the same way.
+
+**`back_cover_text: false` empties the colophon but still emits it.** Dropping the panel
+would renumber every sheet and break imposition. It returns early with the background and no
+items.
+
 ### Invariants
 
 - Panel count is always a multiple of 4 (`blanks_needed`). `sheet_order` raises otherwise.
 - Panel indices are 1-based, contiguous, and asserted at the end of `build_booklet`.
-- Panel 1 is the cover; the last panel is the colophon.
+- Panel 1 is the cover; the last panel is the colophon. Both are composed directly rather
+  than planned, and both are emitted even when they carry nothing — `cover_overlay: false`
+  and `back_cover_text: false` empty them without removing them.
 - The content planner starts at `first_index=2` because the cover is composed separately.
 - Neither half of a press sheet bleeds across the fold.
+- Defaults in `gui/editors.py` must match the dataclass defaults in `model.py`. A mismatch
+  shows the user a control in a state the renderer disagrees with until something writes the
+  key — `cover_overlay` was checked-but-inert this way.
 
 ### Imposition
 
@@ -205,7 +246,19 @@ file", which is a question about the pruned form.
 
 ## Open bugs
 
-None known. The engine and the editor both build cleanly on the example album.
+**`℗` prints as a black box in the core fonts.** The example album's phonographic line is
+`℗ 2026 Tidal Records` and the colophon renders it `■ 2026 Tidal Records`. ReportLab's
+built-in Type 1 faces are WinAnsi-encoded, which has `©` (U+00A9) but not `℗` (U+2117), so
+the glyph falls back to a box. Note that `pdfmetrics.stringWidth('℗', 'Helvetica', 10)`
+returns a plausible 7.61 — measurement does not warn you, only the rendering shows it.
+
+This matters more than a normal glyph gap because `℗` is the standard mark for a sound
+recording and the copyright lines are derived by default, so every album gets it. Two
+candidate fixes: substitute `(P)`, which is the accepted fallback on real sleeves, or detect
+un-encodable characters when a core font is in use and warn that the line needs an embedded
+font. Not yet decided.
+
+Otherwise the engine and the editor both build cleanly on the example album.
 
 ## Unfinished work
 
@@ -217,30 +270,66 @@ None known. The engine and the editor both build cleanly on the example album.
   panel. The editor's Layout pane carries a note saying so; remove it when this lands.
 - **Section headings have no space above them.** `_heading` sets `space_after` but not
   `space_before`, so when two sections land on one panel the heading collides with the
-  previous section's last line. Visible between the songwriter credits and the writer index,
-  and between personnel and production.
+  previous section's last line. Now that the credits panels are gone, the places left to see
+  it are between a liner note and the personnel section, and between Personnel and
+  Production.
 - **The `mono` font role is dead.** `FontSet` registers it and it defaults to Helvetica, but
-  no `Theme` style uses it. Presumably intended for durations and catalog numbers.
+  no `Theme` style uses it. The track listing's durations are the obvious home for it — a
+  monospaced figure is what makes a column of times line up — and are currently set in the
+  `meta` face instead.
+- **`Album.writer_index` and `sort_key_for_name` are dead.** Both still live in `model.py`
+  and are tested-worthy pure functions, but nothing calls them since the writer index panel
+  was removed. Same for `content.writing_credit_phrase`, which still hardcodes the
+  `Written by …` phrasing the song credits deliberately dropped — wiring it up again would
+  reintroduce it. Delete or revive, but do not leave them as a trap.
 - **No batch CLI.** `linernotes-gui` is the only console script. A `linernotes build
   album.yaml -o out/` entry point over `build()` would be a dozen lines.
 - **No tests.** The highest-value targets are `sheet_order` (pure, and its correctness is
   hard to eyeball), `blanks_needed`, `compress_numbers`, `sort_key_for_name`, `join_names`,
   the split/widow logic in `Text.split`, `document._pruned`, and a golden-panel-count test
-  over `examples/slow-water.yaml`.
+  over `examples/slow-water.yaml`. Add the colophon fallback ladder to that list: a 3-track
+  album should print times, a 30-track album should warn and drop the listing, and both are
+  cheap to assert on the `IssueLog`.
 - **The press sheet is never previewed.** The editor shows booklet panels only; imposition
   correctness is still verified by exporting and folding.
+- **The frozen app is unsigned.** `build.py` produces a working `.app`, but macOS Gatekeeper
+  needs right-click → Open on first launch. Signing and notarising (`codesign`, `notarytool`)
+  is the remaining step for real distribution, and needs a paid developer ID.
 
 ## Suggested order
 
-1. `git init` and commit before changing anything.
-2. Tests over the pure functions listed above — the engine is now stable enough to pin down.
+1. Decide the `℗` fix — it is the only thing that makes a finished booklet look broken.
+2. Tests over the pure functions listed above — the engine is stable enough to pin down.
 3. The two cosmetic layout items (heading spacing, `min_orphan_mm`).
-4. A batch CLI.
+4. Delete or revive the three dead functions.
+5. A batch CLI.
+
+## Packaging
+
+`python build.py` freezes the editor with PyInstaller. It cannot cross-compile — PyInstaller
+freezes the interpreter it is running under — so the output is whatever the host is:
+`dist/linernotes.app` on macOS, `dist/linernotes/linernotes.exe` on Windows. `--onefile`
+collapses it to a single executable; `--clean` discards `build/` and `dist/` first.
+
+Three things in there are load-bearing and easy to undo by accident:
+
+- **`packaging/entry.py` is not `gui/__main__.py`.** PyInstaller needs a script to analyse,
+  and analysing the package's own `__main__` would give the frozen app a second, half-built
+  copy of `linernotes.gui`. The entry script also strips macOS's `-psn_…` argument, which is
+  passed to a double-clicked bundle and would otherwise be read as a file to open.
+- **reportlab's data files are collected explicitly.** `collect_data_files("reportlab")` in
+  the spec. The built-in Type 1 metrics are the fallback every booklet starts from, so
+  without them a frozen app cannot set a single line of type.
+- **`--windowed` means no console.** Anything printed to stderr in a frozen build goes
+  nowhere. `main()` still prints on a bad path argument; that message is invisible in the
+  app. Run the inner binary directly (`dist/linernotes.app/Contents/MacOS/linernotes`) when
+  debugging a frozen build — it keeps the terminal attached.
 
 ## Environment
 
 Python 3.14.6 in `.venv/`, installed editable. Runtime dependencies are declared in
-`pyproject.toml`: reportlab 5.0.0, PyYAML 6.0.3, Pillow 12.3.0, PyMuPDF 1.28.0. Tk 9.0.
+`pyproject.toml`: reportlab 5.0.0, PyYAML 6.0.3, Pillow 12.3.0, PyMuPDF 1.28.2,
+mutagen 1.48.1. Tk 9.0. The `[build]` extra adds PyInstaller 6.22.0.
 
 There is no lockfile — `pyproject.toml` carries lower bounds only. reportlab 5.0 is recent
 enough that API drift is a live concern, and the bug this project spent its whole life

@@ -9,9 +9,9 @@ linernotes lays it out and produces two PDFs:
 - **a press PDF**, saddle-stitch imposed two-up with bleed, crop marks and fold marks,
   for sending to a printer.
 
-Songwriter credits, the writer index, and the track listing are all *derived from the track
-data*, so a writer added to a track cannot go missing from the credits panel. So are the ℗
-and © lines, and the running order can be read straight off the audio files.
+Songwriter credits and the track listing are both *derived from the track data*, so a writer
+added to a track cannot go missing from the credits. So are the ℗ and © lines, and the
+running order can be read straight off the audio files.
 
 There is a desktop editor for all of it, and a Python API if you'd rather script it.
 
@@ -113,9 +113,8 @@ What an import deliberately does *not* fill in is the writers — see below.
 ### Songwriters
 
 Most records are written by one person, and saying so once is enough. Whoever is named
-under **Songwriters** is credited on every track, and that credit flows into the track
-listing, the songwriter credits panel and the writer index exactly as if it had been typed
-on each song.
+under **Songwriters** is credited on every track, and that credit flows into the small print
+under each song exactly as if it had been typed on that song.
 
 A song with a different writer overrides it: on that song's pane, **Give this track its own
 writers** starts from the album's writers so you can change the one name that differs.
